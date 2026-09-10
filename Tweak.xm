@@ -471,13 +471,40 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         y = CGRectGetMaxY(followFrame) + 4.0;
     }
     CGRect targetFrame = CGRectMake(x, y, MAX(44.0, ceil(size.width)), MAX(32.0, ceil(size.height)));
-    if (!follow && metadata && metadata.superview) {
+    if (metadata && metadata.superview) {
         CGRect titleFrame = [metadata convertRect:metadata.bounds toView:header];
-        if (CGRectIntersectsRect(CGRectInset(targetFrame, -8.0, 0), titleFrame)) {
-            titleFrame.size.width = MAX(0.0, x - 8.0 - CGRectGetMinX(titleFrame));
-            metadata.frame = [header convertRect:titleFrame toView:metadata.superview];
-            metadata.clipsToBounds = YES;
+        if (CGRectIntersectsRect(CGRectInset(targetFrame, -8.0, -4.0), titleFrame)) {
+            targetFrame.origin.y = MAX(targetFrame.origin.y, CGRectGetMaxY(titleFrame) + 4.0);
         }
+    }
+    // Some versions render the topic separately from the author/title runs.
+    // Collect visible topic bounds, then resolve collisions until no further
+    // move is needed. The result must not depend on subview enumeration order.
+    NSMutableArray<NSValue *> *topicFrames = [NSMutableArray array];
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:header];
+    while (pending.count) {
+        UIView *view = pending.lastObject;
+        [pending removeLastObject];
+        if (view.hidden || view.alpha < 0.01 || view == badge) continue;
+        [pending addObjectsFromArray:view.subviews];
+        NSString *name = NSStringFromClass(view.class).lowercaseString;
+        NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
+        if ([name containsString:@"topic"] || [identifier containsString:@"topic"] ||
+            [name containsString:@"communitytag"] || [identifier containsString:@"community-tag"]) {
+            CGRect frame = [view convertRect:view.bounds toView:header];
+            if (!CGRectIsEmpty(frame)) [topicFrames addObject:[NSValue valueWithCGRect:frame]];
+        }
+    }
+    for (NSUInteger pass = 0; pass < topicFrames.count; pass++) {
+        BOOL moved = NO;
+        for (NSValue *value in topicFrames) {
+            CGRect frame = value.CGRectValue;
+            if (CGRectIntersectsRect(CGRectInset(targetFrame, -8.0, -4.0), frame)) {
+                targetFrame.origin.y = MAX(targetFrame.origin.y, CGRectGetMaxY(frame) + 4.0);
+                moved = YES;
+            }
+        }
+        if (!moved) break;
     }
     if (!CGRectEqualToRect(badge.frame, targetFrame)) {
         badge.frame = targetFrame;
