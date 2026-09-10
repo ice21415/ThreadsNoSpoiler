@@ -97,6 +97,18 @@ static UIView *TSBPostContainer(UIView *view) {
     return nil;
 }
 
+static void TSBAppendHeaderTree(UIView *view, NSUInteger depth) {
+    if (TSBLastSpoilerContext.count >= 120 || depth > 12) return;
+    NSString *indent = [@"" stringByPaddingToLength:depth * 2 withString:@" " startingAtIndex:0];
+    CGRect frame = view.frame;
+    [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"%@header-tree %@ frame:(%.0f,%.0f,%.0f,%.0f) children:%lu",
+        indent, NSStringFromClass(view.class), frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
+        (unsigned long)view.subviews.count]];
+    for (UIView *subview in view.subviews) {
+        TSBAppendHeaderTree(subview, depth + 1);
+    }
+}
+
 static void TSBCaptureSpoilerContext(UIView *spoilerView) {
     [TSBLastSpoilerContext removeAllObjects];
     UIView *candidate = spoilerView;
@@ -113,6 +125,9 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
                     if (TSBLastSpoilerContext.count >= 120) break;
                     [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"  cell-child %@ (children: %lu)",
                         NSStringFromClass(child.class), (unsigned long)child.subviews.count]];
+                }
+                if ([NSStringFromClass(cell.class) containsString:@"BCNFeedItemHeaderCell"]) {
+                    TSBAppendHeaderTree(cell, 0);
                 }
             }
         }
@@ -318,6 +333,9 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     NSArray<NSString *> *entries = showingContext ? TSBLastSpoilerContext.array : TSBObservedViewClasses.array;
     NSString *message = entries.count ? [entries componentsJoinedByString:@"\n"] : @"No spoiler view has been detected yet. Open a post with a spoiler first, then return here.";
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:(showingContext ? @"Current spoiler post hierarchy" : @"Detected spoiler views") message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        UIPasteboard.generalPasteboard.string = message;
+    }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
