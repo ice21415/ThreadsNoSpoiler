@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <substrate.h>
+#import "TSBAdaptiveRows.h"
 
 static NSString * const TSBEnabledKey = @"TSBEnabled";
 static NSString * const TSBForceHideContainerKey = @"TSBForceHideContainer";
@@ -331,6 +332,19 @@ static void TSBProcessHeaderCell(UIView *self) {
 
 static void TSBHookedHeaderLayoutSubviews(UIView *self, SEL _cmd) {
     TSBOriginalHeaderLayoutSubviews(self, _cmd);
+    // Keep native header content in its original height. The appended row
+    // belongs to our direct child badge, not to avatar/title centering.
+    UICollectionViewCell *cell = (UICollectionViewCell *)self;
+    CGFloat nativeHeight = TSBHeaderNativeHeight(cell);
+    if (cell.bounds.size.height > nativeHeight + 1.0) {
+        CGRect frame = cell.contentView.frame;
+        if (frame.size.height != nativeHeight) {
+            frame.size.height = nativeHeight;
+            cell.contentView.frame = frame;
+            [cell.contentView setNeedsLayout];
+            [cell.contentView layoutIfNeeded];
+        }
+    }
     TSBProcessHeaderCell(self);
 }
 
@@ -391,6 +405,7 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
     NSHashTable *owners = header ? objc_getAssociatedObject(header, &TSBBadgeOwnerKey) : nil;
     if ([owners containsObject:spoilerView]) [owners removeObject:spoilerView];
     if (header != nil && owners.count == 0) {
+        TSBSetHeaderRow(header, NO);
         UIView *badge = objc_getAssociatedObject(header, &TSBBadgeKey);
         [badge removeFromSuperview];
         objc_setAssociatedObject(header, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -438,6 +453,7 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     UICollectionViewCell *header = TSBHeaderCellContainingView(timestamp);
     TSBSpoilerBadgeButton *badge = header ? objc_getAssociatedObject(header, &TSBBadgeKey) : nil;
     if (!TSBShowBadge() || header == nil || timestamp == nil) {
+        if (header) TSBSetHeaderRow(header, NO);
         [badge removeFromSuperview];
         return;
     }
@@ -490,40 +506,72 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         y = CGRectGetMaxY(followFrame) + 4.0;
     }
     CGRect targetFrame = CGRectMake(x, y, MAX(44.0, ceil(size.width)), MAX(32.0, ceil(size.height)));
-    if (metadata && metadata.superview) {
-        CGRect titleFrame = [metadata convertRect:metadata.bounds toView:header];
-        if (CGRectIntersectsRect(CGRectInset(targetFrame, -8.0, -4.0), titleFrame)) {
-            targetFrame.origin.y = MAX(targetFrame.origin.y, CGRectGetMaxY(titleFrame) + 4.0);
-        }
-    }
-    // Some versions render the topic separately from the author/title runs.
-    // Collect visible topic bounds, then resolve collisions until no further
-    // move is needed. The result must not depend on subview enumeration order.
-    NSMutableArray<NSValue *> *topicFrames = [NSMutableArray array];
+    // Use actual rendered geometry, including unknown future header controls.
+    NSMutableArray<NSValue *> *obstacles = [NSMutableArray array];
     NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:header];
     while (pending.count) {
         UIView *view = pending.lastObject;
         [pending removeLastObject];
         if (view.hidden || view.alpha < 0.01 || view == badge) continue;
-        [pending addObjectsFromArray:view.subviews];
-        NSString *name = NSStringFromClass(view.class).lowercaseString;
-        NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
-        if ([name containsString:@"topic"] || [identifier containsString:@"topic"] ||
-            [name containsString:@"communitytag"] || [identifier containsString:@"community-tag"]) {
+        BOOL content = view == metadata || [view isKindOfClass:UIControl.class] ||
+            [view isKindOfClass:UILabel.class] || [view isKindOfClass:UIImageView.class] ||
+            [view isKindOfClass:UITextView.class] ||
+            (view.subviews.count == 0 && view != header);
+        if (content) {
             CGRect frame = [view convertRect:view.bounds toView:header];
-            if (!CGRectIsEmpty(frame)) [topicFrames addObject:[NSValue valueWithCGRect:frame]];
+            if (!CGRectIsEmpty(frame)) [obstacles addObject:[NSValue valueWithCGRect:frame]];
+        } else {
+            [pending addObjectsFromArray:view.subviews];
         }
     }
-    for (NSUInteger pass = 0; pass < topicFrames.count; pass++) {
-        BOOL moved = NO;
-        for (NSValue *value in topicFrames) {
-            CGRect frame = value.CGRectValue;
-            if (CGRectIntersectsRect(CGRectInset(targetFrame, -8.0, -4.0), frame)) {
-                targetFrame.origin.y = MAX(targetFrame.origin.y, CGRectGetMaxY(frame) + 4.0);
-                moved = YES;
+    // Keep the complete touch target inside its owning cell. Moving outside
+    // this rectangle could cover a sibling text/media cell, even if the header
+    // itself has no obstacle at that position.
+    CGFloat nativeHeight = TSBHeaderNativeHeight(header);
+    CGRect nativeBounds = header.bounds;
+    nativeBounds.size.height = nativeHeight;
+    CGRect available = CGRectInset(nativeBounds, 4.0, 2.0);
+    NSMutableArray<NSValue *> *candidates = [NSMutableArray arrayWithObject:[NSValue valueWithCGRect:targetFrame]];
+    // Prefer below the requested anchor, then other free gaps in this header.
+    NSMutableArray<NSNumber *> *rows = [NSMutableArray arrayWithObjects:@(y), @(CGRectGetMinY(available)), nil];
+    NSMutableArray<NSNumber *> *columns = [NSMutableArray arrayWithObjects:@(x),
+        @(CGRectGetMaxX(available) - size.width), @(CGRectGetMinX(available)), nil];
+    for (NSValue *value in obstacles) {
+        CGRect frame = value.CGRectValue;
+        [rows addObject:@(CGRectGetMaxY(frame) + 4.0)];
+        [columns addObject:@(CGRectGetMaxX(frame) + 8.0)];
+        [columns addObject:@(CGRectGetMinX(frame) - size.width - 8.0)];
+    }
+    [rows sortUsingSelector:@selector(compare:)];
+    for (NSNumber *row in rows) {
+        for (NSNumber *column in columns) {
+            [candidates addObject:[NSValue valueWithCGRect:CGRectMake(column.doubleValue,
+                row.doubleValue, size.width, size.height)]];
+        }
+    }
+    BOOL found = NO;
+    for (NSValue *candidate in candidates) {
+        CGRect frame = candidate.CGRectValue;
+        if (!CGRectContainsRect(available, frame)) continue;
+        BOOL blocked = NO;
+        for (NSValue *obstacle in obstacles) {
+            if (CGRectIntersectsRect(CGRectInset(frame, -4.0, -2.0), obstacle.CGRectValue)) {
+                blocked = YES;
+                break;
             }
         }
-        if (!moved) break;
+        if (!blocked) {
+            targetFrame = frame;
+            found = YES;
+            break;
+        }
+    }
+    if (!found) {
+        TSBSetHeaderRow(header, YES);
+        targetFrame = CGRectMake(MAX(4.0, CGRectGetWidth(header.bounds) - size.width - 8.0),
+                                 nativeHeight + 4.0, size.width, size.height);
+    } else {
+        TSBSetHeaderRow(header, NO);
     }
     if (!CGRectEqualToRect(badge.frame, targetFrame)) {
         badge.frame = targetFrame;
