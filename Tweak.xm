@@ -450,26 +450,7 @@ static void TSBCheckPendingSpoilers(void) {
             continue;
         }
 
-        NSValue *lastFrameValue = objc_getAssociatedObject(spoilerView, &TSBLastVisibleFrameKey);
-        CGRect lastFrame = lastFrameValue ? lastFrameValue.CGRectValue : CGRectNull;
-        BOOL positionStable = !CGRectIsNull(lastFrame) &&
-            fabs(CGRectGetMinX(lastFrame) - CGRectGetMinX(frameInWindow)) < 0.5 &&
-            fabs(CGRectGetMinY(lastFrame) - CGRectGetMinY(frameInWindow)) < 0.5 &&
-            fabs(CGRectGetWidth(lastFrame) - CGRectGetWidth(frameInWindow)) < 0.5 &&
-            fabs(CGRectGetHeight(lastFrame) - CGRectGetHeight(frameInWindow)) < 0.5;
-        objc_setAssociatedObject(spoilerView, &TSBLastVisibleFrameKey,
-                                 [NSValue valueWithCGRect:frameInWindow], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (!positionStable) {
-            objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, @(0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            continue;
-        }
-
-        NSInteger samples = [objc_getAssociatedObject(spoilerView, &TSBVisibleSampleCountKey) integerValue] + 1;
-        objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, @(samples), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        // Reveal after the fully visible text has stopped moving for about 1 second.
-        if (samples < 10) {
-            continue;
-        }
+        // Reveal on the first timer pass once the text is fully visible.
         objc_setAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         TSBOriginalSetHidden(spoilerView, @selector(setHidden:), YES);
         [TSBPendingSpoilerViews removeObject:spoilerView];
