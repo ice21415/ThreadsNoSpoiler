@@ -11,6 +11,8 @@ static char TSBSettingsButtonKey;
 static char TSBBadgeKey;
 static char TSBBadgeAnchorKey;
 static char TSBPostTimestampKey;
+static char TSBCopyButtonKey;
+static char TSBCopyButtonHeaderKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 static NSMutableOrderedSet<NSString *> *TSBLastSpoilerContext;
@@ -20,6 +22,7 @@ static NSMutableSet<NSString *> *TSBHeaderHookedClasses;
 static void (*TSBOriginalHeaderLayoutSubviews)(id, SEL);
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
+static void TSBCopyPostData(UIView *header);
 
 static BOOL TSBEnabled(void) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
@@ -173,6 +176,68 @@ static UIView *TSBHeaderMetadataTextView(UIView *view) {
     return nil;
 }
 
+@interface TSBPostCopyButton : UIButton
+@end
+
+@implementation TSBPostCopyButton
+- (void)tsb_copyPostData:(id)sender {
+    UIView *header = objc_getAssociatedObject(self, &TSBCopyButtonHeaderKey);
+    TSBCopyPostData(header);
+    [self setTitle:@"Copied" forState:UIControlStateNormal];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self setTitle:@"Copy data" forState:UIControlStateNormal];
+    });
+}
+@end
+
+static void TSBAppendCopyData(NSMutableString *output, UIView *view, NSUInteger depth, NSUInteger *count) {
+    if (*count >= 400 || depth > 20) return;
+    (*count)++;
+    CGRect frame = view.frame;
+    NSString *identifier = view.accessibilityIdentifier ?: @"";
+    NSString *label = view.accessibilityLabel ?: @"";
+    NSString *value = view.accessibilityValue ?: @"";
+    NSString *text = @"";
+    if ([view isKindOfClass:UILabel.class]) text = ((UILabel *)view).text ?: @"";
+    if ([view isKindOfClass:UIButton.class]) text = ((UIButton *)view).currentTitle ?: text;
+    [output appendFormat:@"%*s%@ frame:(%.1f,%.1f,%.1f,%.1f) hidden:%d alpha:%.2f tag:%ld id:%@ axLabel:%@ axValue:%@ text:%@\n",
+        (int)(depth * 2), "", NSStringFromClass(view.class), frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
+        view.hidden, view.alpha, (long)view.tag, identifier, label, value, text];
+    for (UIView *subview in view.subviews) {
+        TSBAppendCopyData(output, subview, depth + 1, count);
+    }
+}
+
+static void TSBCopyPostData(UIView *header) {
+    UIView *post = TSBPostContainer(header) ?: header;
+    NSMutableString *output = [NSMutableString stringWithFormat:@"Threads No Spoiler post runtime data\nheader: %@\npost container: %@\n\n",
+        NSStringFromClass(header.class), NSStringFromClass(post.class)];
+    NSUInteger count = 0;
+    TSBAppendCopyData(output, post, 0, &count);
+    UIPasteboard.generalPasteboard.string = output;
+}
+
+static void TSBInstallPostCopyButton(UIView *header, UIView *metadataTextView) {
+    TSBPostCopyButton *button = objc_getAssociatedObject(header, &TSBCopyButtonKey);
+    if (button) return;
+    button = [TSBPostCopyButton buttonWithType:UIButtonTypeSystem];
+    [button setTitle:@"Copy data" forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+    button.tintColor = UIColor.secondaryLabelColor;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.accessibilityIdentifier = @"ThreadsNoSpoilerCopyPostData";
+    objc_setAssociatedObject(button, &TSBCopyButtonHeaderKey, header, OBJC_ASSOCIATION_ASSIGN);
+    [button addTarget:button action:@selector(tsb_copyPostData:) forControlEvents:UIControlEventTouchUpInside];
+    [header addSubview:button];
+    [NSLayoutConstraint activateConstraints:@[
+        [button.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-38],
+        [button.centerYAnchor constraintEqualToAnchor:metadataTextView.centerYAnchor],
+        [button.widthAnchor constraintEqualToConstant:48],
+        [button.heightAnchor constraintEqualToConstant:18]
+    ]];
+    objc_setAssociatedObject(header, &TSBCopyButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void TSBRefreshSpoilerBadgesBelowView(UIView *view) {
     if ([NSStringFromClass(view.class) containsString:@"BCNSpoilerView"]) {
         TSBUpdateSpoilerBadge(view);
@@ -188,6 +253,7 @@ static void TSBHookedHeaderLayoutSubviews(UIView *self, SEL _cmd) {
     UIView *post = TSBPostContainer(self);
     if (post && metadataTextView) {
         objc_setAssociatedObject(post, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
+        TSBInstallPostCopyButton(self, metadataTextView);
         TSBRefreshSpoilerBadgesBelowView(post);
     }
 }
