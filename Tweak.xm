@@ -13,6 +13,7 @@ static char TSBBadgeAnchorKey;
 static char TSBPostTimestampKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
+static NSMutableOrderedSet<NSString *> *TSBLastSpoilerContext;
 static NSMutableSet<NSString *> *TSBTimestampHookedClasses;
 static NSMutableDictionary<NSString *, NSValue *> *TSBTimestampGetterIMPs;
 
@@ -92,6 +93,28 @@ static UIView *TSBPostContainer(UIView *view) {
         }
     }
     return nil;
+}
+
+static void TSBCaptureSpoilerContext(UIView *spoilerView) {
+    [TSBLastSpoilerContext removeAllObjects];
+    UIView *candidate = spoilerView;
+    for (NSUInteger depth = 0; candidate && depth < 30; depth++, candidate = candidate.superview) {
+        [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"parent[%lu] %@ (children: %lu)",
+            (unsigned long)depth, NSStringFromClass(candidate.class), (unsigned long)candidate.subviews.count]];
+    }
+    UIView *post = TSBPostContainer(spoilerView);
+    if (post) {
+        NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:post];
+        while (pending.count && TSBLastSpoilerContext.count < 120) {
+            UIView *view = pending.lastObject;
+            [pending removeLastObject];
+            [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"post-tree %@ (children: %lu)",
+                NSStringFromClass(view.class), (unsigned long)view.subviews.count]];
+            for (UIView *subview in view.subviews.reverseObjectEnumerator) {
+                [pending addObject:subview];
+            }
+        }
+    }
 }
 
 static void TSBRegisterTimestampLabel(UIView *header, UILabel *label) {
@@ -180,6 +203,7 @@ static void (*TSBOriginalDidMoveToWindow)(id, SEL);
 static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBOriginalDidMoveToWindow(self, _cmd);
     TSBRecordHierarchy(self);
+    TSBCaptureSpoilerContext(self);
     TSBUpdateSpoilerBadge(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         self.hidden = YES;
@@ -193,6 +217,7 @@ static void (*TSBOriginalLayoutSubviews)(id, SEL);
 static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBOriginalLayoutSubviews(self, _cmd);
     TSBRecordHierarchy(self);
+    TSBCaptureSpoilerContext(self);
     TSBUpdateSpoilerBadge(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         self.hidden = YES;
@@ -230,7 +255,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return 2;
-    return section == 2 ? 2 : 1;
+    return section == 2 ? 3 : 1;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -248,8 +273,8 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"SettingCell" forIndexPath:indexPath];
     cell.accessoryView = nil;
-    if (indexPath.section == 2 && indexPath.row == 0) {
-        cell.textLabel.text = @"Show detected spoiler views";
+    if (indexPath.section == 2 && indexPath.row < 2) {
+        cell.textLabel.text = indexPath.row == 0 ? @"Show detected spoiler views" : @"Show current spoiler post hierarchy";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         return cell;
@@ -272,10 +297,12 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section != 2 || indexPath.row != 0) return;
+    if (indexPath.section != 2 || indexPath.row > 1) return;
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    NSString *message = TSBObservedViewClasses.count ? [[TSBObservedViewClasses array] componentsJoinedByString:@"\n"] : @"No spoiler view has been detected yet. Open a post with a spoiler first, then return here.";
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Detected spoiler views" message:message preferredStyle:UIAlertControllerStyleAlert];
+    BOOL showingContext = indexPath.row == 1;
+    NSArray<NSString *> *entries = showingContext ? TSBLastSpoilerContext.array : TSBObservedViewClasses.array;
+    NSString *message = entries.count ? [entries componentsJoinedByString:@"\n"] : @"No spoiler view has been detected yet. Open a post with a spoiler first, then return here.";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:(showingContext ? @"Current spoiler post hierarchy" : @"Detected spoiler views") message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -386,6 +413,7 @@ static void TSBInstallTimestampHooks(void) {
     @autoreleasepool {
         TSBHookedClasses = [NSMutableSet set];
         TSBObservedViewClasses = [NSMutableOrderedSet orderedSet];
+        TSBLastSpoilerContext = [NSMutableOrderedSet orderedSet];
         TSBTimestampHookedClasses = [NSMutableSet set];
         TSBTimestampGetterIMPs = [NSMutableDictionary dictionary];
         MSHookMessageEx(UIViewController.class, @selector(viewDidAppear:), (IMP)TSBHookedViewDidAppear, (IMP *)&TSBOriginalViewDidAppear);
