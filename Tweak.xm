@@ -14,7 +14,9 @@ static char TSBBadgeStatusKey;
 static char TSBBadgeAnchorKey;
 static char TSBPostTimestampKey;
 static char TSBRemovalAnimationPlayedKey;
+static char TSBVisibleSampleCountKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
+static NSHashTable<UIView *> *TSBPendingSpoilerViews;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 static NSMutableOrderedSet<NSString *> *TSBLastSpoilerContext;
 static NSMutableSet<NSString *> *TSBTimestampHookedClasses;
@@ -22,6 +24,7 @@ static NSMutableDictionary<NSString *, NSValue *> *TSBTimestampGetterIMPs;
 static NSMutableSet<NSString *> *TSBHeaderHookedClasses;
 static void (*TSBOriginalHeaderLayoutSubviews)(id, SEL);
 static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
+static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp);
@@ -431,6 +434,38 @@ static void TSBAnimateSpoilerRemoval(UIView *spoilerView) {
     });
 }
 
+static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
+    if (spoilerView != nil) {
+        [TSBPendingSpoilerViews addObject:spoilerView];
+    }
+}
+
+static void TSBCheckPendingSpoilers(void) {
+    if (!TSBEnabled() || ![NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
+        return;
+    }
+    for (UIView *spoilerView in TSBPendingSpoilerViews.allObjects) {
+        if (spoilerView.window == nil) {
+            objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [TSBPendingSpoilerViews removeObject:spoilerView];
+            continue;
+        }
+        if (!TSBIsInVisibleViewport(spoilerView)) {
+            objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, @(0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            continue;
+        }
+        NSInteger samples = [objc_getAssociatedObject(spoilerView, &TSBVisibleSampleCountKey) integerValue] + 1;
+        objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, @(samples), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (samples < 2) {
+            continue;
+        }
+        TSBAnimateSpoilerRemoval(spoilerView);
+        objc_setAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        TSBOriginalSetHidden(spoilerView, @selector(setHidden:), YES);
+        [TSBPendingSpoilerViews removeObject:spoilerView];
+    }
+}
+
 static void TSBHideMasksBelowView(UIView *view) {
     if (!TSBEnabled()) {
         return;
@@ -450,11 +485,22 @@ static void TSBHideMasksBelowView(UIView *view) {
 static void (*TSBOriginalDidMoveToWindow)(id, SEL);
 static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBOriginalDidMoveToWindow(self, _cmd);
+    if (self.window == nil) {
+        objc_setAssociatedObject(self, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [TSBPendingSpoilerViews removeObject:self];
+        return;
+    }
     TSBRecordHierarchy(self);
     TSBCaptureSpoilerContext(self);
     TSBUpdateSpoilerBadge(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
-        self.hidden = TSBIsInVisibleViewport(self);
+        if ([objc_getAssociatedObject(self, &TSBRemovalAnimationPlayedKey) boolValue]) {
+            TSBOriginalSetHidden(self, @selector(setHidden:), YES);
+        } else {
+            TSBRegisterPendingSpoiler(self);
+            TSBOriginalSetHidden(self, @selector(setHidden:), NO);
+        }
         return;
     }
     TSBHideDirectSpoilerLayers(self);
@@ -468,22 +514,23 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBCaptureSpoilerContext(self);
     TSBUpdateSpoilerBadge(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
-        self.hidden = TSBIsInVisibleViewport(self);
+        if ([objc_getAssociatedObject(self, &TSBRemovalAnimationPlayedKey) boolValue]) {
+            TSBOriginalSetHidden(self, @selector(setHidden:), YES);
+        } else {
+            TSBRegisterPendingSpoiler(self);
+            TSBOriginalSetHidden(self, @selector(setHidden:), NO);
+        }
         return;
     }
     TSBHideDirectSpoilerLayers(self);
     TSBHideMasksBelowView(self);
 }
 
-static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     BOOL shouldForceHide = TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey];
     if (shouldForceHide) {
-        BOOL isVisible = TSBIsInVisibleViewport(self);
-        if (isVisible) {
-            TSBAnimateSpoilerRemoval(self);
-        }
-        TSBOriginalSetHidden(self, _cmd, isVisible ? YES : NO);
+        TSBRegisterPendingSpoiler(self);
+        TSBOriginalSetHidden(self, _cmd, NO);
         return;
     }
     TSBOriginalSetHidden(self, _cmd, hidden);
@@ -689,11 +736,16 @@ static void TSBInstallHeaderHooks(void) {
 %ctor {
     @autoreleasepool {
         TSBHookedClasses = [NSMutableSet set];
+        TSBPendingSpoilerViews = [NSHashTable weakObjectsHashTable];
         TSBObservedViewClasses = [NSMutableOrderedSet orderedSet];
         TSBLastSpoilerContext = [NSMutableOrderedSet orderedSet];
         TSBTimestampHookedClasses = [NSMutableSet set];
         TSBTimestampGetterIMPs = [NSMutableDictionary dictionary];
         TSBHeaderHookedClasses = [NSMutableSet set];
+        NSTimer *visibilityTimer = [NSTimer timerWithTimeInterval:0.10 repeats:YES block:^(__unused NSTimer *timer) {
+            TSBCheckPendingSpoilers();
+        }];
+        [NSRunLoop.mainRunLoop addTimer:visibilityTimer forMode:NSRunLoopCommonModes];
         MSHookMessageEx(UIViewController.class, @selector(viewDidAppear:), (IMP)TSBHookedViewDidAppear, (IMP *)&TSBOriginalViewDidAppear);
         MSHookMessageEx(UICollectionViewCell.class, @selector(didMoveToWindow), (IMP)TSBHookedCollectionCellDidMoveToWindow, (IMP *)&TSBOriginalCollectionCellDidMoveToWindow);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
