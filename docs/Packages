@@ -1,30 +1,14 @@
 Package: com.example.threadsnospoiler
-Version: 0.1.19-1+debug
+Version: 0.1.21-1+debug
 Architecture: iphoneos-arm64
 Maintainer: Local
 Installed-Size: 384
 Depends: mobilesubstrate (>= 0.9.5000)
-Filename: ./com.example.threadsnospoiler_0.1.19-1+debug_iphoneos-arm64.deb
-Size: 44186
-MD5sum: 6ee9456be61c751c1f3f0dd5eccb300d
-SHA1: b3bc9aad9111c5cb4d42eded75412d325332f1ba
-SHA256: d23ede004edb401d833c296f6d8d8b9f55bc5bdbe0ecebda39539501190a2613
-Section: Tweaks
-Description: Adds a local spoiler-display preference to Threads.
-Author: Local
-Name: Threads No Spoiler
-
-Package: com.example.threadsnospoiler
-Version: 0.1.20-2+debug
-Architecture: iphoneos-arm64
-Maintainer: Local
-Installed-Size: 384
-Depends: mobilesubstrate (>= 0.9.5000)
-Filename: ./com.example.threadsnospoiler_0.1.20-2+debug_iphoneos-arm64.deb
-Size: 39268
-MD5sum: 8cce99687fb9ac7117c46a51f24ab805
-SHA1: 954069a1572a619d314b3a023af12375f752c10e
-SHA256: 6174f2550ae0d01c350b8a5ef1e62fd5c1f4eded54c64c665e0f96358a833aba
+Filename: ./com.example.threadsnospoiler_0.1.21-1+debug_iphoneos-arm64.deb
+Size: 39994
+MD5sum: 360db19776255ff52b41b04e2e3ed68c
+SHA1: 14d9c696d0109354f3885a352dda7e4c24fa0ab9
+SHA256: 345f8e9f74d553b74ac597167db627a4f2b31decc3af65b967c3b86643a16ea9
 Section: Tweaks
 Description: Adds a local spoiler-display preference to Threads.
 Author: Local
