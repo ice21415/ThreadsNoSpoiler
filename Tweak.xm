@@ -5,8 +5,10 @@
 
 static NSString * const TSBEnabledKey = @"TSBEnabled";
 static NSString * const TSBDebugKey = @"TSBDebugLogging";
+static NSString * const TSBForceHideContainerKey = @"TSBForceHideContainer";
 static char TSBSettingsButtonKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
+static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 
 static BOOL TSBEnabled(void) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
@@ -26,10 +28,20 @@ static void TSBLog(NSString *format, ...) {
     va_end(arguments);
 }
 
+static void TSBRecordView(UIView *view) {
+    NSString *description = [NSString stringWithFormat:@"%@ (children: %lu)", NSStringFromClass(view.class), (unsigned long)view.subviews.count];
+    if (![TSBObservedViewClasses containsObject:description] && TSBObservedViewClasses.count < 80) {
+        [TSBObservedViewClasses addObject:description];
+    }
+}
+
 static BOOL TSBIsSpoilerMask(UIView *view) {
     NSString *name = NSStringFromClass(view.class).lowercaseString;
-    return [name containsString:@"spoiler"] &&
+    NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
+    BOOL namedMask = [name containsString:@"spoiler"] &&
         ([name containsString:@"mask"] || [name containsString:@"overlay"] || [name containsString:@"blur"]);
+    BOOL identifiedMask = [identifier containsString:@"spoiler"] || [identifier containsString:@"mask"];
+    return namedMask || identifiedMask || [view isKindOfClass:UIVisualEffectView.class];
 }
 
 static void TSBHideMasksBelowView(UIView *view) {
@@ -37,6 +49,7 @@ static void TSBHideMasksBelowView(UIView *view) {
         return;
     }
     for (UIView *subview in view.subviews) {
+        TSBRecordView(subview);
         if (TSBIsSpoilerMask(subview)) {
             subview.hidden = YES;
             subview.userInteractionEnabled = NO;
@@ -50,6 +63,22 @@ static void TSBHideMasksBelowView(UIView *view) {
 static void (*TSBOriginalDidMoveToWindow)(id, SEL);
 static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBOriginalDidMoveToWindow(self, _cmd);
+    TSBRecordView(self);
+    if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
+        self.hidden = YES;
+        return;
+    }
+    TSBHideMasksBelowView(self);
+}
+
+static void (*TSBOriginalLayoutSubviews)(id, SEL);
+static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
+    TSBOriginalLayoutSubviews(self, _cmd);
+    TSBRecordView(self);
+    if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
+        self.hidden = YES;
+        return;
+    }
     TSBHideMasksBelowView(self);
 }
 
@@ -71,36 +100,57 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     [self.tableView registerClass:UITableViewCell.class forCellReuseIdentifier:@"SettingCell"];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? 1 : 1;
+    return section == 2 ? 2 : 1;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section == 0 ? @"Display" : @"Diagnostics";
+    if (section == 0) return @"Display";
+    if (section == 1) return @"Compatibility";
+    return @"Diagnostics";
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return section == 0 ? @"When enabled, the tweak hides recognised Threads spoiler-mask views on this device." : @"Enable only when checking compatibility after a Threads update.";
+    if (section == 0) return @"When enabled, the tweak hides recognised Threads spoiler-mask views on this device.";
+    if (section == 1) return @"Use only if automatic reveal does not work. It can hide the whole spoiler container instead of only its overlay.";
+    return @"Show detected views after opening a spoiler post. This lets you report compatibility details without SSH.";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"SettingCell" forIndexPath:indexPath];
+    cell.accessoryView = nil;
+    if (indexPath.section == 2 && indexPath.row == 0) {
+        cell.textLabel.text = @"Show detected spoiler views";
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
     UISwitch *toggle = [UISwitch new];
-    toggle.tag = indexPath.section;
-    toggle.on = indexPath.section == 0 ? TSBEnabled() : [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey];
+    toggle.tag = indexPath.section == 0 ? 0 : (indexPath.section == 1 ? 1 : 2);
+    toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey]);
     [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
-    cell.textLabel.text = indexPath.section == 0 ? @"Automatically reveal spoilers" : @"Debug logging";
+    cell.textLabel.text = toggle.tag == 0 ? @"Automatically reveal spoilers" : (toggle.tag == 1 ? @"Force-hide spoiler container" : @"Debug logging");
     cell.accessoryView = toggle;
+    cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     return cell;
 }
 
 - (void)toggleChanged:(UISwitch *)toggle {
-    NSString *key = toggle.tag == 0 ? TSBEnabledKey : TSBDebugKey;
+    NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : TSBDebugKey);
     [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:key];
     [NSUserDefaults.standardUserDefaults synchronize];
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section != 2 || indexPath.row != 0) return;
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSString *message = TSBObservedViewClasses.count ? [[TSBObservedViewClasses array] componentsJoinedByString:@"\n"] : @"No spoiler view has been detected yet. Open a post with a spoiler first, then return here.";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Detected spoiler views" message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end
@@ -153,6 +203,7 @@ static void TSBInstallSpoilerHooks(void) {
             continue;
         }
         MSHookMessageEx(cls, @selector(didMoveToWindow), (IMP)TSBHookedDidMoveToWindow, (IMP *)&TSBOriginalDidMoveToWindow);
+        MSHookMessageEx(cls, @selector(layoutSubviews), (IMP)TSBHookedLayoutSubviews, (IMP *)&TSBOriginalLayoutSubviews);
         [TSBHookedClasses addObject:name];
         TSBLog(@"hooked %@", name);
         // The original IMP storage is intentionally single-use: one concrete
@@ -165,6 +216,7 @@ static void TSBInstallSpoilerHooks(void) {
 %ctor {
     @autoreleasepool {
         TSBHookedClasses = [NSMutableSet set];
+        TSBObservedViewClasses = [NSMutableOrderedSet orderedSet];
         MSHookMessageEx(UIViewController.class, @selector(viewDidAppear:), (IMP)TSBHookedViewDidAppear, (IMP *)&TSBOriginalViewDidAppear);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();

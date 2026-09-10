@@ -5,16 +5,16 @@ Codename: ios
 Architectures: iphoneos-arm64
 Components: main
 Description: Threads No Spoiler APT repository
-Date: Thu, 10 Sep 2026 02:22:27 +0000
+Date: Thu, 10 Sep 2026 02:38:42 +0000
 MD5Sum:
- 652951ca88c5cc0a54b273baba7912f1              535 Packages
- 66af994d1d4f302f99a5f5550c738dbb              384 Packages.gz
+ 9d68635f5ec54b68a5b775e413c562a9              535 Packages
+ 0d09aadd10b7eb6faa8211aa9d2f9cdb              386 Packages.gz
 SHA1:
- a0ebfe450e21c6d139cae2d7a2f49048f62a0be5              535 Packages
- a799b5d3b25b24fee88e90c7b208565b25fc1cbd              384 Packages.gz
+ 3ba1196b3237d9c72995f5787636309ac6f99df6              535 Packages
+ ad3465f078d949721ca03e059e2c66fb080bb145              386 Packages.gz
 SHA256:
- badd15a22747dea3a8f14c97417d29cfc6311b0d8899792054f0a0dab36d4b0d              535 Packages
- 892b928e4cf163cbaa68bf7b0a2195790c74ce4bdaffbf8b1630616a2f11671a              384 Packages.gz
+ e625cb88f0b3e81a45a13374e6d8c55f3d820bca067dac1cfc8aeb9e9f4b25cb              535 Packages
+ 11b63df64fbc7d0ca653c835589f12cb7ecb36e1b6d4788c530b5916d571e1f9              386 Packages.gz
 SHA512:
- 7e3123371510d245ecaec6423288269db168ec08f68c01afad832e2a5a5109bf1a555f9949992bbbe7c549abaa7a5b0036a171982672a514fd88349bfcbc551c              535 Packages
- 1f0e352e03ccffdf97bc3a32a0e75ff8574d94fde01ecaa451516ec874d9869377e905b8bbdf5df7a66dd3851a082359998ecfbec7bcd61c8e2d38bf3a2d6de6              384 Packages.gz
+ 868190aac91f5054fbe9b95a01ba79c024fd3f2e7399a9daa8e082aa400373eac4f32e6d94ad0b8523d37163f5c1844cd01d34639e38c790bf23aab665066ec2              535 Packages
+ d5088dc6acbd83b96160fdd8dadeb8cc13da26aa3bd8704073adab3e9736adb8074db1b2c0aa91ed8802d99f1ab396daa0cdd45a1cf060671f4e6ad28f92ff05              386 Packages.gz
