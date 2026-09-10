@@ -105,6 +105,46 @@ static UIView *TSBPostContainer(UIView *view) {
     return nil;
 }
 
+static UICollectionViewCell *TSBOuterFeedCell(UIView *view) {
+    for (NSUInteger depth = 0; view && depth < 30; depth++, view = view.superview) {
+        if ([view isKindOfClass:UICollectionViewCell.class] &&
+            [NSStringFromClass(view.superview.class) containsString:@"BCNFeedCollectionView"]) {
+            return (UICollectionViewCell *)view;
+        }
+    }
+    return nil;
+}
+
+static UICollectionViewCell *TSBHeaderCellForFeedCell(UICollectionViewCell *feedCell) {
+    UICollectionView *collection = [feedCell.superview isKindOfClass:UICollectionView.class] ? (UICollectionView *)feedCell.superview : nil;
+    NSIndexPath *target = collection ? [collection indexPathForCell:feedCell] : nil;
+    if (!collection || !target) return nil;
+    UICollectionViewCell *nearestHeader = nil;
+    for (UICollectionViewCell *candidate in collection.visibleCells) {
+        if (![NSStringFromClass(candidate.class) containsString:@"BCNFeedItemHeaderCell"]) continue;
+        NSIndexPath *indexPath = [collection indexPathForCell:candidate];
+        if (!indexPath) continue;
+        BOOL isBefore = indexPath.section < target.section ||
+            (indexPath.section == target.section && indexPath.item < target.item);
+        if (!isBefore) continue;
+        NSIndexPath *current = nearestHeader ? [collection indexPathForCell:nearestHeader] : nil;
+        if (!current || indexPath.section > current.section ||
+            (indexPath.section == current.section && indexPath.item > current.item)) {
+            nearestHeader = candidate;
+        }
+    }
+    return nearestHeader;
+}
+
+static UICollectionViewCell *TSBHeaderCellContainingView(UIView *view) {
+    for (NSUInteger depth = 0; view && depth < 20; depth++, view = view.superview) {
+        if ([NSStringFromClass(view.class) containsString:@"BCNFeedItemHeaderCell"]) {
+            return (UICollectionViewCell *)view;
+        }
+    }
+    return nil;
+}
+
 static void TSBAppendHeaderTree(UIView *view, NSUInteger depth) {
     if (TSBLastSpoilerContext.count >= 120 || depth > 12) return;
     NSString *indent = [@"" stringByPaddingToLength:depth * 2 withString:@" " startingAtIndex:0];
@@ -156,10 +196,10 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
 }
 
 static void TSBRegisterTimestampLabel(UIView *header, UILabel *label) {
-    UIView *post = TSBPostContainer(header);
-    if (post && label) {
-        objc_setAssociatedObject(post, &TSBPostTimestampKey, label, OBJC_ASSOCIATION_ASSIGN);
-        TSBLog(@"registered timestamp %@ for %@", NSStringFromClass(header.class), NSStringFromClass(post.class));
+    UICollectionViewCell *headerCell = TSBHeaderCellContainingView(header);
+    if (headerCell && label) {
+        objc_setAssociatedObject(headerCell, &TSBPostTimestampKey, label, OBJC_ASSOCIATION_ASSIGN);
+        TSBLog(@"registered timestamp %@ for %@", NSStringFromClass(header.class), NSStringFromClass(headerCell.class));
     }
 }
 
@@ -252,7 +292,7 @@ static void TSBProcessHeaderCell(UIView *self) {
     UIView *metadataTextView = TSBHeaderMetadataTextView(self);
     UIView *post = TSBPostContainer(self);
     if (post && metadataTextView) {
-        objc_setAssociatedObject(post, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(self, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
         TSBInstallPostCopyButton(self, metadataTextView);
         TSBRefreshSpoilerBadgesBelowView(post);
     }
@@ -306,8 +346,9 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
         badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
         objc_setAssociatedObject(spoilerView, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    UIView *post = TSBPostContainer(spoilerView);
-    id mappedTimestamp = post ? objc_getAssociatedObject(post, &TSBPostTimestampKey) : nil;
+    UICollectionViewCell *feedCell = TSBOuterFeedCell(spoilerView);
+    UICollectionViewCell *headerCell = TSBHeaderCellForFeedCell(feedCell);
+    id mappedTimestamp = headerCell ? objc_getAssociatedObject(headerCell, &TSBPostTimestampKey) : nil;
     // This is only the label returned by Threads' own timestampLabel getter.
     UIView *timestamp = [mappedTimestamp isKindOfClass:UIView.class] ? mappedTimestamp : nil;
     id previousAnchor = objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey);
