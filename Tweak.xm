@@ -4,7 +4,6 @@
 #import <substrate.h>
 
 static NSString * const TSBEnabledKey = @"TSBEnabled";
-static NSString * const TSBDebugKey = @"TSBDebugLogging";
 static NSString * const TSBForceHideContainerKey = @"TSBForceHideContainer";
 static NSString * const TSBShowBadgeKey = @"TSBShowSpoilerBadge";
 static char TSBSettingsButtonKey;
@@ -69,13 +68,7 @@ static BOOL TSBShowBadge(void) {
 }
 
 static void TSBLog(NSString *format, ...) {
-    if (![NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey]) {
-        return;
-    }
-    va_list arguments;
-    va_start(arguments, format);
-    NSLogv([@"[ThreadsNoSpoiler] " stringByAppendingString:format], arguments);
-    va_end(arguments);
+    (void)format;
 }
 
 static void TSBRecordView(UIView *view) {
@@ -621,7 +614,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? 2 : 2;
+    return section == 0 ? 2 : 1;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -637,10 +630,10 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"SettingCell" forIndexPath:indexPath];
     cell.accessoryView = nil;
     UISwitch *toggle = [UISwitch new];
-    toggle.tag = indexPath.section == 0 ? (indexPath.row == 0 ? 0 : 3) : (indexPath.row == 0 ? 1 : 2);
-    toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : (toggle.tag == 2 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey] : TSBShowBadge()));
+    toggle.tag = indexPath.section == 0 ? (indexPath.row == 0 ? 0 : 3) : 1;
+    toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : TSBShowBadge());
     [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
-    cell.textLabel.text = toggle.tag == 0 ? @"自動顯示劇透內容" : (toggle.tag == 1 ? @"強制隱藏劇透區塊" : (toggle.tag == 2 ? @"啟用除錯記錄" : @"顯示劇透標籤"));
+    cell.textLabel.text = toggle.tag == 0 ? @"自動顯示劇透內容" : (toggle.tag == 1 ? @"強制隱藏劇透區塊" : @"顯示劇透標籤");
     cell.accessoryView = toggle;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -648,7 +641,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 }
 
 - (void)toggleChanged:(UISwitch *)toggle {
-    NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : (toggle.tag == 2 ? TSBDebugKey : TSBShowBadgeKey));
+    NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : TSBShowBadgeKey);
     [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:key];
     [NSUserDefaults.standardUserDefaults synchronize];
 }
@@ -656,6 +649,9 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 @end
 
 static BOOL TSBIsSettingsController(UIViewController *controller) {
+    if ([controller isKindOfClass:TSBPreferencesController.class]) {
+        return NO;
+    }
     NSString *title = controller.navigationItem.title ?: controller.title ?: @"";
     NSString *lowercaseTitle = title.lowercaseString;
     return [lowercaseTitle isEqualToString:@"settings"] ||
