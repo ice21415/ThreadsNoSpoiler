@@ -340,17 +340,22 @@ static void TSBAnimateSpoilerRemoval(UIView *spoilerView) {
         return;
     }
 
-    UIView *parent = spoilerView.superview;
-    UIView *host = TSBOuterFeedCell(spoilerView) ?: parent;
+    // Removal motion is intentionally limited to inline text spoilers.
+    UIView *textCell = spoilerView;
+    while (textCell != nil &&
+           ![NSStringFromClass(textCell.class) containsString:@"BCNFeedTextCell"]) {
+        textCell = textCell.superview;
+    }
+    if (textCell == nil || spoilerView.bounds.size.width < 4.0 ||
+        spoilerView.bounds.size.height < 4.0) {
+        return;
+    }
+
+    UIView *host = TSBOuterFeedCell(spoilerView) ?: textCell;
     if (host.window == nil) {
         return;
     }
-    CGRect targetFrame;
-    if (spoilerView.bounds.size.width >= 4.0 && spoilerView.bounds.size.height >= 4.0) {
-        targetFrame = [spoilerView convertRect:spoilerView.bounds toView:host];
-    } else {
-        targetFrame = [parent convertRect:parent.bounds toView:host];
-    }
+    CGRect targetFrame = [spoilerView convertRect:spoilerView.bounds toView:host];
     CGRect visibleFrame = CGRectIntersection(targetFrame, host.bounds);
     if (!CGRectIsNull(visibleFrame) && visibleFrame.size.width >= 4.0 && visibleFrame.size.height >= 4.0) {
         targetFrame = visibleFrame;
@@ -361,62 +366,48 @@ static void TSBAnimateSpoilerRemoval(UIView *spoilerView) {
         return;
     }
 
-    // Build the cover synchronously, before setHidden: reveals the underlying content.
-    UIView *highlight = [[UIView alloc] initWithFrame:targetFrame];
-    highlight.userInteractionEnabled = NO;
-    highlight.clipsToBounds = YES;
-    highlight.layer.cornerRadius = MIN(10.0, CGRectGetHeight(targetFrame) / 2.0);
+    // Preserve only the original inline spoiler surface before setHidden: reveals it.
+    UIView *dissolveView = [[UIView alloc] initWithFrame:targetFrame];
+    dissolveView.userInteractionEnabled = NO;
+    dissolveView.clipsToBounds = YES;
 
     UIView *snapshot = [host resizableSnapshotViewFromRect:targetFrame
                                         afterScreenUpdates:NO
                                              withCapInsets:UIEdgeInsetsZero];
-    if (snapshot != nil) {
-        snapshot.frame = highlight.bounds;
-        snapshot.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [highlight addSubview:snapshot];
-    } else {
-        highlight.backgroundColor = UIColor.systemBackgroundColor;
+    if (snapshot == nil) {
+        return;
     }
+    snapshot.frame = dissolveView.bounds;
+    snapshot.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [dissolveView addSubview:snapshot];
 
-    UIView *tint = [[UIView alloc] initWithFrame:highlight.bounds];
-    tint.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    tint.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.13];
-    tint.userInteractionEnabled = NO;
-    [highlight addSubview:tint];
-    highlight.layer.borderColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.9].CGColor;
-    highlight.layer.borderWidth = 1.5;
-
-    TSBSpoilerBadgeLabel *message = [TSBSpoilerBadgeLabel new];
-    message.text = @"劇透已解除";
-    message.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
-    message.textColor = UIColor.whiteColor;
-    message.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.94];
-    message.textAlignment = NSTextAlignmentCenter;
-    message.layer.cornerRadius = 5.0;
-    message.clipsToBounds = YES;
-    message.userInteractionEnabled = NO;
-    [message sizeToFit];
-    CGFloat messageWidth = MIN(CGRectGetWidth(highlight.bounds), MAX(76.0, ceil(message.bounds.size.width)));
-    CGFloat messageHeight = MIN(CGRectGetHeight(highlight.bounds), MAX(20.0, ceil(message.bounds.size.height)));
-    message.frame = CGRectMake(round((CGRectGetWidth(highlight.bounds) - messageWidth) / 2.0),
-                               round((CGRectGetHeight(highlight.bounds) - messageHeight) / 2.0),
-                               messageWidth, messageHeight);
-    [highlight addSubview:message];
-    [host addSubview:highlight];
+    CAGradientLayer *dissolveMask = [CAGradientLayer layer];
+    dissolveMask.frame = dissolveView.bounds;
+    dissolveMask.startPoint = CGPointMake(0.0, 0.5);
+    dissolveMask.endPoint = CGPointMake(1.0, 0.5);
+    dissolveMask.colors = @[(id)UIColor.clearColor.CGColor,
+                            (id)UIColor.clearColor.CGColor,
+                            (id)UIColor.blackColor.CGColor,
+                            (id)UIColor.blackColor.CGColor];
+    dissolveMask.locations = @[@(-0.20), @(-0.10), @(0.0), @(0.0)];
+    dissolveView.layer.mask = dissolveMask;
+    [host addSubview:dissolveView];
     objc_setAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    highlight.alpha = 1.0;
-    highlight.transform = CGAffineTransformMakeScale(0.985, 0.985);
     dispatch_async(dispatch_get_main_queue(), ^{
-        [UIView animateWithDuration:0.16 delay:0.0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-            highlight.transform = CGAffineTransformIdentity;
-        } completion:^(__unused BOOL finished) {
-            [UIView animateWithDuration:0.42 delay:0.42 options:UIViewAnimationOptionCurveEaseIn animations:^{
-                highlight.alpha = 0.0;
-                highlight.transform = CGAffineTransformMakeScale(1.012, 1.012);
-            } completion:^(__unused BOOL completed) {
-                [highlight removeFromSuperview];
-            }];
+        CABasicAnimation *wipe = [CABasicAnimation animationWithKeyPath:@"locations"];
+        wipe.fromValue = @[@(-0.20), @(-0.10), @(0.0), @(0.0)];
+        wipe.toValue = @[@(0.90), @(1.0), @(1.10), @(1.20)];
+        wipe.duration = 0.72;
+        wipe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        dissolveMask.locations = @[@(0.90), @(1.0), @(1.10), @(1.20)];
+        [dissolveMask addAnimation:wipe forKey:@"ThreadsNoSpoilerDissolve"];
+
+        [UIView animateWithDuration:0.72 delay:0.0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+            dissolveView.alpha = 0.12;
+            dissolveView.transform = CGAffineTransformMakeTranslation(3.0, 0.0);
+        } completion:^(__unused BOOL completed) {
+            [dissolveView removeFromSuperview];
         }];
     });
 }
