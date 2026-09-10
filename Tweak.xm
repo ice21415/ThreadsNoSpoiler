@@ -349,10 +349,26 @@ static void TSBInstallTimestampHooks(void) {
     for (int index = 0; index < classCount; index++) {
         Class cls = classes[index];
         NSString *name = NSStringFromClass(cls);
-        if (![name containsString:@"BCNFeedItemHeader"] || [TSBTimestampHookedClasses containsObject:name]) {
+        // Threads sometimes changes the concrete header class. Select by the
+        // actual timestampLabel implementation, never by label contents.
+        BOOL isView = NO;
+        for (Class current = cls; current; current = class_getSuperclass(current)) {
+            if (current == UIView.class) { isView = YES; break; }
+        }
+        if (!isView || ![name containsString:@"BCN"] || [TSBTimestampHookedClasses containsObject:name]) {
             continue;
         }
-        if (class_getInstanceMethod(cls, selector) == NULL) {
+        unsigned int methodCount = 0;
+        Method *methods = class_copyMethodList(cls, &methodCount);
+        BOOL definesTimestampGetter = NO;
+        for (unsigned int methodIndex = 0; methodIndex < methodCount; methodIndex++) {
+            if (method_getName(methods[methodIndex]) == selector) {
+                definesTimestampGetter = YES;
+                break;
+            }
+        }
+        free(methods);
+        if (!definesTimestampGetter) {
             continue;
         }
         IMP original = NULL;
