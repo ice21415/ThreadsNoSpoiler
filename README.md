@@ -25,3 +25,13 @@ The resulting Debian package belongs on a jailbroken test device. This Windows w
 ## Scope
 
 The Settings entry is a navigation-bar item rather than an inserted private Threads settings cell. That makes it substantially less coupled to Threads' internal table or collection-view implementation. It appears for English, Traditional Chinese, and Simplified Chinese Settings titles.
+
+## Sileo repository
+
+Once GitHub Pages is enabled, add this URL in Sileo:
+
+```
+https://ice21415.github.io/ThreadsNoSpoiler/
+```
+
+The generated APT metadata and the current package are in `docs/`. When releasing a new build, replace the `.deb` in that directory and regenerate `Packages`, `Packages.gz`, and `Release` before pushing.

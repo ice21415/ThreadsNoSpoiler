@@ -1,0 +1,20 @@
+Origin: ThreadsNoSpoiler
+Label: Threads No Spoiler
+Suite: stable
+Codename: ios
+Architectures: iphoneos-arm64
+Components: main
+Description: Threads No Spoiler APT repository
+Date: Thu, 10 Sep 2026 02:22:27 +0000
+MD5Sum:
+ 652951ca88c5cc0a54b273baba7912f1              535 Packages
+ 66af994d1d4f302f99a5f5550c738dbb              384 Packages.gz
+SHA1:
+ a0ebfe450e21c6d139cae2d7a2f49048f62a0be5              535 Packages
+ a799b5d3b25b24fee88e90c7b208565b25fc1cbd              384 Packages.gz
+SHA256:
+ badd15a22747dea3a8f14c97417d29cfc6311b0d8899792054f0a0dab36d4b0d              535 Packages
+ 892b928e4cf163cbaa68bf7b0a2195790c74ce4bdaffbf8b1630616a2f11671a              384 Packages.gz
+SHA512:
+ 7e3123371510d245ecaec6423288269db168ec08f68c01afad832e2a5a5109bf1a555f9949992bbbe7c549abaa7a5b0036a171982672a514fd88349bfcbc551c              535 Packages
+ 1f0e352e03ccffdf97bc3a32a0e75ff8574d94fde01ecaa451516ec874d9869377e905b8bbdf5df7a66dd3851a082359998ecfbec7bcd61c8e2d38bf3a2d6de6              384 Packages.gz
