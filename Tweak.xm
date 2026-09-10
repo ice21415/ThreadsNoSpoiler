@@ -28,6 +28,15 @@ static NSMutableSet<NSString *> *TSBHeaderHookedClasses;
 static void (*TSBOriginalHeaderLayoutSubviews)(id, SEL);
 static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
 static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
+static NSMutableDictionary<NSString *, NSValue *> *TSBMediaSpoilerGetterIMPs;
+
+static IMP TSBMediaSpoilerOriginal(id object) {
+    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
+        NSValue *value = TSBMediaSpoilerGetterIMPs[NSStringFromClass(cls)];
+        if (value) return (IMP)value.pointerValue;
+    }
+    return NULL;
+}
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp);
@@ -238,6 +247,55 @@ static UIView *TSBHeaderMetadataTextView(UIView *view) {
         if (result) return result;
     }
     return nil;
+}
+
+// Read-side override only: never write the server model or composer state.
+// Carousel pages created later read the same unspoiled attachment flag.
+static BOOL TSBMediaSpoilerBool(id self, SEL selector) {
+    if (TSBEnabled()) return NO;
+    IMP original = TSBMediaSpoilerOriginal(self);
+    return original ? ((BOOL (*)(id, SEL))original)(self, selector) : NO;
+}
+
+static id TSBMediaSpoilerObject(id self, SEL selector) {
+    IMP original = TSBMediaSpoilerOriginal(self);
+    id value = original ? ((id (*)(id, SEL))original)(self, selector) : nil;
+    return TSBEnabled() && [value isKindOfClass:NSNumber.class] ? @NO : value;
+}
+
+static void TSBInstallMediaSpoilerHooks(void) {
+    SEL selector = NSSelectorFromString(@"isSpoilerMedia");
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    for (unsigned int i = 0; i < count; i++) {
+        Class cls = classes[i];
+        NSString *name = NSStringFromClass(cls);
+        // Limit the override to immutable feed fragment implementations.
+        if (![name containsString:@"Fragment"] || ![name hasSuffix:@"Impl"] ||
+            [name containsString:@"Composer"] || TSBMediaSpoilerGetterIMPs[name]) continue;
+        unsigned int methodCount = 0;
+        Method *methods = class_copyMethodList(cls, &methodCount);
+        for (unsigned int j = 0; j < methodCount; j++) {
+            Method method = methods[j];
+            if (method_getName(method) != selector || method_getNumberOfArguments(method) != 2) continue;
+            char type[32] = {0};
+            method_getReturnType(method, type, sizeof(type));
+            IMP replacement = NULL;
+            if (!strcmp(type, @encode(BOOL)) || !strcmp(type, "B") || !strcmp(type, "c")) {
+                replacement = (IMP)TSBMediaSpoilerBool;
+            } else if (type[0] == '@') {
+                replacement = (IMP)TSBMediaSpoilerObject;
+            }
+            if (replacement) {
+                IMP original = NULL;
+                MSHookMessageEx(cls, selector, replacement, &original);
+                if (original) TSBMediaSpoilerGetterIMPs[name] = [NSValue valueWithPointer:(const void *)original];
+            }
+            break;
+        }
+        free(methods);
+    }
+    free(classes);
 }
 
 // The bundled Threads binary exposes MoreButtonConfig as part of the feed
@@ -814,6 +872,8 @@ static void TSBInstallHeaderHooks(void) {
 
 %ctor {
     @autoreleasepool {
+        TSBMediaSpoilerGetterIMPs = [NSMutableDictionary dictionary];
+        TSBInstallMediaSpoilerHooks();
         TSBHookedClasses = [NSMutableSet set];
         TSBPendingSpoilerViews = [NSHashTable weakObjectsHashTable];
         TSBTrackedSpoilerViews = [NSHashTable weakObjectsHashTable];
@@ -830,11 +890,13 @@ static void TSBInstallHeaderHooks(void) {
         MSHookMessageEx(UICollectionViewCell.class, @selector(didMoveToWindow), (IMP)TSBHookedCollectionCellDidMoveToWindow, (IMP *)&TSBOriginalCollectionCellDidMoveToWindow);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
+            TSBInstallMediaSpoilerHooks();
             // Legacy timestamp getter hooks disabled; use the observed title identifier.
             TSBInstallHeaderHooks();
         });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
+            TSBInstallMediaSpoilerHooks();
             // Legacy timestamp getter hooks disabled; use the observed title identifier.
             TSBInstallHeaderHooks();
         });
