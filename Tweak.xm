@@ -344,12 +344,10 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
         gesture.state == UIGestureRecognizerStateChanged;
     if (showingOriginal) {
         self.alpha = 0.58;
-        self.transform = CGAffineTransformMakeScale(0.96, 0.96);
     } else if (gesture.state == UIGestureRecognizerStateEnded ||
                gesture.state == UIGestureRecognizerStateCancelled ||
                gesture.state == UIGestureRecognizerStateFailed) {
         self.alpha = 1.0;
-        self.transform = CGAffineTransformIdentity;
     } else {
         return;
     }
@@ -391,7 +389,10 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         badge.accessibilityHint = @"按住可查看原始防劇透遮罩";
         UILongPressGestureRecognizer *previewGesture = [[UILongPressGestureRecognizer alloc]
             initWithTarget:badge action:@selector(tsb_handleOriginalPreview:)];
-        previewGesture.minimumPressDuration = 0.0;
+        // A zero-duration long press turns every tap/drag into an active
+        // gesture and makes the feed treat the badge like a draggable item.
+        previewGesture.minimumPressDuration = 0.35;
+        previewGesture.allowableMovement = 8.0;
         previewGesture.cancelsTouchesInView = YES;
         [badge addGestureRecognizer:previewGesture];
         [badge sizeToFit];
