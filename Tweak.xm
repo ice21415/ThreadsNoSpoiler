@@ -6,7 +6,9 @@
 static NSString * const TSBEnabledKey = @"TSBEnabled";
 static NSString * const TSBDebugKey = @"TSBDebugLogging";
 static NSString * const TSBForceHideContainerKey = @"TSBForceHideContainer";
+static NSString * const TSBShowBadgeKey = @"TSBShowSpoilerBadge";
 static char TSBSettingsButtonKey;
+static char TSBBadgeKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 
@@ -16,6 +18,14 @@ static BOOL TSBEnabled(void) {
         return YES;
     }
     return [defaults boolForKey:TSBEnabledKey];
+}
+
+static BOOL TSBShowBadge(void) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults objectForKey:TSBShowBadgeKey] == nil) {
+        return YES;
+    }
+    return [defaults boolForKey:TSBShowBadgeKey];
 }
 
 static void TSBLog(NSString *format, ...) {
@@ -66,6 +76,38 @@ static void TSBHideDirectSpoilerLayers(UIView *container) {
     }
 }
 
+static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
+    UILabel *badge = objc_getAssociatedObject(spoilerView, &TSBBadgeKey);
+    UIView *parent = spoilerView.superview;
+    if (!TSBShowBadge() || parent == nil) {
+        [badge removeFromSuperview];
+        objc_setAssociatedObject(spoilerView, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    if (badge == nil) {
+        badge = [UILabel new];
+        badge.text = @"劇透";
+        badge.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+        badge.textColor = UIColor.whiteColor;
+        badge.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
+        badge.textAlignment = NSTextAlignmentCenter;
+        badge.layer.cornerRadius = 9;
+        badge.layer.masksToBounds = YES;
+        badge.translatesAutoresizingMaskIntoConstraints = NO;
+        badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
+        [parent addSubview:badge];
+        [NSLayoutConstraint activateConstraints:@[
+            [badge.topAnchor constraintEqualToAnchor:spoilerView.topAnchor constant:8],
+            [badge.trailingAnchor constraintEqualToAnchor:spoilerView.trailingAnchor constant:-8],
+            [badge.widthAnchor constraintGreaterThanOrEqualToConstant:42],
+            [badge.heightAnchor constraintEqualToConstant:22]
+        ]];
+        objc_setAssociatedObject(spoilerView, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    badge.hidden = NO;
+    [parent bringSubviewToFront:badge];
+}
+
 static void TSBHideMasksBelowView(UIView *view) {
     if (!TSBEnabled()) {
         return;
@@ -86,6 +128,7 @@ static void (*TSBOriginalDidMoveToWindow)(id, SEL);
 static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBOriginalDidMoveToWindow(self, _cmd);
     TSBRecordHierarchy(self);
+    TSBUpdateSpoilerBadge(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         self.hidden = YES;
         return;
@@ -98,6 +141,7 @@ static void (*TSBOriginalLayoutSubviews)(id, SEL);
 static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBOriginalLayoutSubviews(self, _cmd);
     TSBRecordHierarchy(self);
+    TSBUpdateSpoilerBadge(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         self.hidden = YES;
         return;
@@ -133,6 +177,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == 0) return 2;
     return section == 2 ? 2 : 1;
 }
 
@@ -158,10 +203,10 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         return cell;
     }
     UISwitch *toggle = [UISwitch new];
-    toggle.tag = indexPath.section == 0 ? 0 : (indexPath.section == 1 ? 1 : 2);
-    toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey]);
+    toggle.tag = indexPath.section == 0 ? (indexPath.row == 0 ? 0 : 3) : (indexPath.section == 1 ? 1 : 2);
+    toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : (toggle.tag == 2 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey] : TSBShowBadge()));
     [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
-    cell.textLabel.text = toggle.tag == 0 ? @"Automatically reveal spoilers" : (toggle.tag == 1 ? @"Force-hide spoiler container" : @"Debug logging");
+    cell.textLabel.text = toggle.tag == 0 ? @"Automatically reveal spoilers" : (toggle.tag == 1 ? @"Force-hide spoiler container" : (toggle.tag == 2 ? @"Debug logging" : @"Show spoiler badge"));
     cell.accessoryView = toggle;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -169,7 +214,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 }
 
 - (void)toggleChanged:(UISwitch *)toggle {
-    NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : TSBDebugKey);
+    NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : (toggle.tag == 2 ? TSBDebugKey : TSBShowBadgeKey));
     [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:key];
     [NSUserDefaults.standardUserDefaults synchronize];
 }
