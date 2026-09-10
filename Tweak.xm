@@ -26,6 +26,25 @@ static NSMutableSet<NSString *> *TSBTimestampHookedClasses;
 static NSMutableDictionary<NSString *, NSValue *> *TSBTimestampGetterIMPs;
 static NSMutableSet<NSString *> *TSBHeaderHookedClasses;
 static void (*TSBOriginalHeaderLayoutSubviews)(id, SEL);
+static UIView *(*TSBOriginalCollectionHitTest)(id, SEL, CGPoint, UIEvent *);
+
+static UIView *TSBHookedCollectionHitTest(UICollectionView *self, SEL selector, CGPoint point, UIEvent *event) {
+    UIView *original = TSBOriginalCollectionHitTest(self, selector, point, event);
+    if (!original || ![NSStringFromClass(self.class) containsString:@"BCNFeedCollectionView"] ||
+        !CGRectContainsPoint(self.bounds, point)) return original;
+    // The badge can sit below its header cell after a long topic wraps.
+    // Route only its actual bounds at the collection level; a header-only
+    // hit-test cannot catch a touch assigned to the following media cell.
+    for (UICollectionViewCell *cell in self.visibleCells) {
+        UIButton *badge = objc_getAssociatedObject(cell, &TSBBadgeKey);
+        if (!badge || badge.hidden || badge.alpha < 0.01 || !badge.enabled ||
+            !badge.userInteractionEnabled || badge.window != self.window ||
+            cell.hidden || cell.alpha < 0.01) continue;
+        CGPoint local = [badge convertPoint:point fromView:self];
+        if (CGRectContainsPoint(badge.bounds, local)) return badge;
+    }
+    return original;
+}
 static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
 static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 static void (*TSBOriginalSetAlpha)(id, SEL, CGFloat);
@@ -876,6 +895,7 @@ static void TSBInstallHeaderHooks(void) {
         [NSRunLoop.mainRunLoop addTimer:visibilityTimer forMode:NSRunLoopCommonModes];
         MSHookMessageEx(UIViewController.class, @selector(viewDidAppear:), (IMP)TSBHookedViewDidAppear, (IMP *)&TSBOriginalViewDidAppear);
         MSHookMessageEx(UICollectionViewCell.class, @selector(didMoveToWindow), (IMP)TSBHookedCollectionCellDidMoveToWindow, (IMP *)&TSBOriginalCollectionCellDidMoveToWindow);
+        MSHookMessageEx(UICollectionView.class, @selector(hitTest:withEvent:), (IMP)TSBHookedCollectionHitTest, (IMP *)&TSBOriginalCollectionHitTest);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
             // Legacy timestamp getter hooks disabled; use the observed title identifier.
