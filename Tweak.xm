@@ -448,8 +448,13 @@ static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
     }
 }
 
+static void TSBRehideSpoilerLayersIfNeeded(UIView *spoilerView);
+
 static void TSBCheckPendingSpoilers(void) {
     for (UIView *view in TSBTrackedSpoilerViews.allObjects) {
+        // Carousel cells are reused and can restore their blur layers without
+        // triggering a new layout pass on the spoiler container.
+        TSBRehideSpoilerLayersIfNeeded(view);
         TSBUpdateSpoilerBadge(view);
     }
     if (!TSBEnabled() || ![NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
@@ -493,6 +498,17 @@ static void TSBHideMasksBelowView(UIView *view) {
         }
         TSBHideMasksBelowView(subview);
     }
+}
+
+static void TSBRehideSpoilerLayersIfNeeded(UIView *spoilerView) {
+    if (!TSBEnabled() ||
+        [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] ||
+        spoilerView.window == nil || spoilerView.hidden ||
+        [objc_getAssociatedObject(spoilerView, &TSBPreviewingOriginalKey) boolValue]) {
+        return;
+    }
+    TSBHideDirectSpoilerLayers(spoilerView);
+    TSBHideMasksBelowView(spoilerView);
 }
 
 static void (*TSBOriginalDidMoveToWindow)(id, SEL);
@@ -591,6 +607,12 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         return;
     }
     TSBOriginalSetHidden(self, _cmd, hidden);
+    // The carousel may repopulate descendant layers immediately after it
+    // restores a reused page. Re-apply on the next main-loop turn as well as
+    // in the visibility timer above, so the old page does not remain blurred.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        TSBRehideSpoilerLayersIfNeeded(self);
+    });
 }
 
 @interface TSBPreferencesController : UITableViewController

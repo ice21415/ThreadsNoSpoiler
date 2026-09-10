@@ -1,14 +1,14 @@
 Package: com.example.threadsnospoiler
-Version: 0.1.38-8+debug
+Version: 0.1.38-9+debug
 Architecture: iphoneos-arm64
 Maintainer: Local
 Installed-Size: 284
 Depends: mobilesubstrate (>= 0.9.5000)
-Filename: ./com.example.threadsnospoiler_0.1.38-8+debug_iphoneos-arm64.deb
-Size: 42802
-MD5sum: 1014c7e32f68fceaf29d715771742402
-SHA1: 22b952b869281b3d64cf613cb5f4eb0df3a6773c
-SHA256: 244711a3e97189504ad54d17e557d5247be39752a980cb9bbd26a3391a14403e
+Filename: ./com.example.threadsnospoiler_0.1.38-9+debug_iphoneos-arm64.deb
+Size: 43910
+MD5sum: f025ca4abbd465e3014d214e6930968e
+SHA1: 036886a47c89d949997b9c4d4f9fe235f95aa6a5
+SHA256: ed71eb81b876c8b677cd8922e2499d574e84a7604dedaed364f0dfe6e4acd5f6
 Section: Tweaks
 Description: Adds a local spoiler-display preference to Threads.
 Author: Local
