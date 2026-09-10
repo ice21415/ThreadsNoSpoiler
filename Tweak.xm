@@ -20,6 +20,7 @@ static char TSBActiveSpoilerKey;
 static char TSBBadgeOwnerKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
 static NSHashTable<UIView *> *TSBPendingSpoilerViews;
+static NSHashTable<UIView *> *TSBTrackedSpoilerViews;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 static NSMutableOrderedSet<NSString *> *TSBLastSpoilerContext;
 static NSMutableSet<NSString *> *TSBTimestampHookedClasses;
@@ -31,6 +32,7 @@ static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp);
+static void TSBClearSpoilerBadge(UIView *spoilerView);
 
 static BOOL TSBIsInVisibleViewport(UIView *view) {
     UIWindow *window = view.window;
@@ -157,8 +159,7 @@ static UICollectionViewCell *TSBHeaderCellForFeedCell(UICollectionViewCell *feed
         if (![NSStringFromClass(candidate.class) isEqualToString:@"BCNFeedItemHeaderCell.BCNFeedItemHeaderCell"]) continue;
         NSIndexPath *indexPath = [collection indexPathForCell:candidate];
         if (!indexPath) continue;
-        BOOL isBefore = indexPath.section < target.section ||
-            (indexPath.section == target.section && indexPath.item < target.item);
+        BOOL isBefore = indexPath.section == target.section && indexPath.item < target.item;
         if (!isBefore) continue;
         NSIndexPath *current = nearestHeader ? [collection indexPathForCell:nearestHeader] : nil;
         if (!current || indexPath.section > current.section ||
@@ -294,9 +295,19 @@ static id TSBHookedTimestampLabel(id self, SEL _cmd) {
 }
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
+    if (!TSBEnabled() || ![objc_getAssociatedObject(spoilerView, &TSBActiveSpoilerKey) boolValue] ||
+        spoilerView.bounds.size.width < 4 || spoilerView.bounds.size.height < 4 ||
+        !TSBIsInVisibleViewport(spoilerView)) {
+        TSBClearSpoilerBadge(spoilerView);
+        return;
+    }
     UICollectionViewCell *cell = TSBOuterFeedCell(spoilerView);
     UICollectionViewCell *header = TSBHeaderCellForFeedCell(cell);
     UIView *anchor = header ? TSBHeaderMetadataTextView(header) : nil;
+    // Drop the previous association before rebinding to a different header.
+    if (objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != anchor) {
+        TSBClearSpoilerBadge(spoilerView);
+    }
     NSString *status = !TSBShowBadge() ? @"disabled in settings" : !cell ? @"no outer feed cell" : !header ? @"no preceding visible header/index path" : !anchor ? @"header title identifier missing" : @"anchor resolved; placement requested";
     objc_setAssociatedObject(spoilerView, &TSBBadgeStatusKey, status, OBJC_ASSOCIATION_COPY_NONATOMIC);
     TSBPlaceSpoilerBadge(spoilerView, anchor);
@@ -305,7 +316,9 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
 static void TSBClearSpoilerBadge(UIView *spoilerView) {
     UIView *anchor = objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey);
     UICollectionViewCell *header = TSBHeaderCellContainingView(anchor);
-    if (header != nil && objc_getAssociatedObject(header, &TSBBadgeOwnerKey) == spoilerView) {
+    NSHashTable *owners = header ? objc_getAssociatedObject(header, &TSBBadgeOwnerKey) : nil;
+    if ([owners containsObject:spoilerView]) [owners removeObject:spoilerView];
+    if (header != nil && owners.count == 0) {
         UILabel *badge = objc_getAssociatedObject(header, &TSBBadgeKey);
         [badge removeFromSuperview];
         objc_setAssociatedObject(header, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -365,7 +378,12 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         [badge removeFromSuperview];
         [header addSubview:badge];
     }
-    objc_setAssociatedObject(header, &TSBBadgeOwnerKey, spoilerView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSHashTable *owners = objc_getAssociatedObject(header, &TSBBadgeOwnerKey);
+    if (!owners) {
+        owners = [NSHashTable weakObjectsHashTable];
+        objc_setAssociatedObject(header, &TSBBadgeOwnerKey, owners, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [owners addObject:spoilerView];
     CGRect anchorFrame = [timestamp convertRect:timestamp.bounds toView:header];
     CGSize size = badge.bounds.size;
     CGFloat x = CGRectGetMaxX(anchorFrame) + 4.0;
@@ -374,7 +392,7 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     if (!CGRectEqualToRect(badge.frame, targetFrame)) {
         badge.frame = targetFrame;
     }
-    objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     badge.hidden = NO;
 }
 
@@ -464,6 +482,9 @@ static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
 }
 
 static void TSBCheckPendingSpoilers(void) {
+    for (UIView *view in TSBTrackedSpoilerViews.allObjects) {
+        TSBUpdateSpoilerBadge(view);
+    }
     if (!TSBEnabled() || ![NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         return;
     }
@@ -532,15 +553,17 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBOriginalDidMoveToWindow(self, _cmd);
     if (self.window == nil) {
         TSBClearSpoilerBadge(self);
-        objc_setAssociatedObject(self, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBLastVisibleFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(self, &TSBActiveSpoilerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [TSBPendingSpoilerViews removeObject:self];
         return;
     }
     TSBRecordHierarchy(self);
     TSBCaptureSpoilerContext(self);
+    [TSBTrackedSpoilerViews addObject:self];
+    if (objc_getAssociatedObject(self, &TSBActiveSpoilerKey) == nil) {
+        objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(!self.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         if (![objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue]) {
             TSBOriginalSetHidden(self, @selector(setHidden:), YES);
@@ -583,6 +606,18 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
 }
 
 static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
+    // Only app writes reach this hook. Plugin writes use the original IMP.
+    [TSBTrackedSpoilerViews addObject:self];
+    objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(!hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (hidden) {
+        TSBClearSpoilerBadge(self);
+        [TSBPendingSpoilerViews removeObject:self];
+        objc_setAssociatedObject(self, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, &TSBLastVisibleFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        TSBOriginalSetHidden(self, _cmd, YES);
+        return;
+    }
     BOOL shouldForceHide = TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey];
     if (shouldForceHide) {
         BOOL isKnownSpoiler = [objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue];
@@ -597,7 +632,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
             TSBUpdateSpoilerBadge(self);
         }
         TSBRegisterPendingSpoiler(self);
-        TSBOriginalSetHidden(self, _cmd, NO);
+        TSBOriginalSetHidden(self, _cmd, [objc_getAssociatedObject(self, &TSBRemovalAnimationPlayedKey) boolValue]);
         return;
     }
     TSBOriginalSetHidden(self, _cmd, hidden);
@@ -804,6 +839,7 @@ static void TSBInstallHeaderHooks(void) {
     @autoreleasepool {
         TSBHookedClasses = [NSMutableSet set];
         TSBPendingSpoilerViews = [NSHashTable weakObjectsHashTable];
+        TSBTrackedSpoilerViews = [NSHashTable weakObjectsHashTable];
         TSBObservedViewClasses = [NSMutableOrderedSet orderedSet];
         TSBLastSpoilerContext = [NSMutableOrderedSet orderedSet];
         TSBTimestampHookedClasses = [NSMutableSet set];
