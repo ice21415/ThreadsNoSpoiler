@@ -387,13 +387,15 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
         badge.accessibilityLabel = @"劇透貼文";
         badge.accessibilityHint = @"按住可查看原始防劇透遮罩";
+        badge.accessibilityTraits = UIAccessibilityTraitButton;
         UILongPressGestureRecognizer *previewGesture = [[UILongPressGestureRecognizer alloc]
             initWithTarget:badge action:@selector(tsb_handleOriginalPreview:)];
-        // A zero-duration long press turns every tap/drag into an active
-        // gesture and makes the feed treat the badge like a draggable item.
-        previewGesture.minimumPressDuration = 0.35;
+        // Start immediately, but cancel when the finger moves far enough to
+        // be a feed scroll instead of a press.
+        previewGesture.minimumPressDuration = 0.0;
         previewGesture.allowableMovement = 8.0;
-        previewGesture.cancelsTouchesInView = YES;
+        // Let the feed keep receiving a scroll gesture when the touch moves.
+        previewGesture.cancelsTouchesInView = NO;
         [badge addGestureRecognizer:previewGesture];
         [badge sizeToFit];
         [header addSubview:badge];
@@ -413,7 +415,7 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     CGSize size = badge.bounds.size;
     CGFloat x = CGRectGetMaxX(anchorFrame) + 4.0;
     CGFloat y = round(CGRectGetMidY(anchorFrame) - size.height / 2.0);
-    CGRect targetFrame = CGRectMake(x, y, MAX(36.0, ceil(size.width)), MAX(17.0, ceil(size.height)));
+    CGRect targetFrame = CGRectMake(x, y, MAX(44.0, ceil(size.width)), MAX(32.0, ceil(size.height)));
     if (!CGRectEqualToRect(badge.frame, targetFrame)) {
         badge.frame = targetFrame;
     }
@@ -580,7 +582,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 - (instancetype)init {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     if (self) {
-        self.title = @"Spoiler Bypass";
+        self.title = @"劇透設定";
     }
     return self;
 }
@@ -590,39 +592,29 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     [self.tableView registerClass:UITableViewCell.class forCellReuseIdentifier:@"SettingCell"];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 2;
-    return section == 2 ? 3 : 1;
+    return section == 0 ? 2 : 2;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if (section == 0) return @"Display";
-    if (section == 1) return @"Compatibility";
-    return @"Diagnostics";
+    return section == 0 ? @"劇透顯示" : @"進階設定";
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return @"When enabled, the tweak hides recognised Threads spoiler-mask views on this device.";
-    if (section == 1) return @"Use only if automatic reveal does not work. It can hide the whole spoiler container instead of only its overlay.";
-    return @"Show detected views after opening a spoiler post. This lets you report compatibility details without SSH.";
+    if (section == 0) return @"控制劇透內容與劇透標籤的顯示方式。";
+    return @"一般情況不需要調整。遇到相容性問題時再開啟。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"SettingCell" forIndexPath:indexPath];
     cell.accessoryView = nil;
-    if (indexPath.section == 2 && indexPath.row < 2) {
-        cell.textLabel.text = indexPath.row == 0 ? @"Show detected spoiler views" : @"Show current spoiler post hierarchy";
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        return cell;
-    }
     UISwitch *toggle = [UISwitch new];
-    toggle.tag = indexPath.section == 0 ? (indexPath.row == 0 ? 0 : 3) : (indexPath.section == 1 ? 1 : 2);
+    toggle.tag = indexPath.section == 0 ? (indexPath.row == 0 ? 0 : 3) : (indexPath.row == 0 ? 1 : 2);
     toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : (toggle.tag == 2 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey] : TSBShowBadge()));
     [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
-    cell.textLabel.text = toggle.tag == 0 ? @"Automatically reveal spoilers" : (toggle.tag == 1 ? @"Force-hide spoiler container" : (toggle.tag == 2 ? @"Debug logging" : @"Show spoiler badge"));
+    cell.textLabel.text = toggle.tag == 0 ? @"自動顯示劇透內容" : (toggle.tag == 1 ? @"強制隱藏劇透區塊" : (toggle.tag == 2 ? @"啟用除錯記錄" : @"顯示劇透標籤"));
     cell.accessoryView = toggle;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -633,20 +625,6 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : (toggle.tag == 2 ? TSBDebugKey : TSBShowBadgeKey));
     [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:key];
     [NSUserDefaults.standardUserDefaults synchronize];
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section != 2 || indexPath.row > 1) return;
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    BOOL showingContext = indexPath.row == 1;
-    NSArray<NSString *> *entries = showingContext ? TSBLastSpoilerContext.array : TSBObservedViewClasses.array;
-    NSString *message = entries.count ? [entries componentsJoinedByString:@"\n"] : @"No spoiler view has been detected yet. Open a post with a spoiler first, then return here.";
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:(showingContext ? @"Current spoiler post hierarchy" : @"Detected spoiler views") message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        UIPasteboard.generalPasteboard.string = message;
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end
@@ -665,7 +643,7 @@ static void TSBHookedViewDidAppear(UIViewController *self, SEL _cmd, BOOL animat
     if (!TSBIsSettingsController(self) || objc_getAssociatedObject(self, &TSBSettingsButtonKey)) {
         return;
     }
-    UIBarButtonItem *item = [[UIBarButtonItem alloc] initWithTitle:@"Spoiler Bypass"
+    UIBarButtonItem *item = [[UIBarButtonItem alloc] initWithTitle:@"劇透設定"
                                                               style:UIBarButtonItemStylePlain
                                                              target:self
                                                              action:@selector(tsb_openSpoilerBypass:)];
