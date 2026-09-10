@@ -106,6 +106,12 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBHideMasksBelowView(self);
 }
 
+static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
+static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
+    BOOL shouldForceHide = TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey];
+    TSBOriginalSetHidden(self, _cmd, shouldForceHide ? YES : hidden);
+}
+
 @interface TSBPreferencesController : UITableViewController
 @end
 
@@ -228,6 +234,7 @@ static void TSBInstallSpoilerHooks(void) {
         }
         MSHookMessageEx(cls, @selector(didMoveToWindow), (IMP)TSBHookedDidMoveToWindow, (IMP *)&TSBOriginalDidMoveToWindow);
         MSHookMessageEx(cls, @selector(layoutSubviews), (IMP)TSBHookedLayoutSubviews, (IMP *)&TSBOriginalLayoutSubviews);
+        MSHookMessageEx(cls, @selector(setHidden:), (IMP)TSBHookedSetHidden, (IMP *)&TSBOriginalSetHidden);
         [TSBHookedClasses addObject:name];
         TSBLog(@"hooked %@", name);
         // The original IMP storage is intentionally single-use: one concrete
