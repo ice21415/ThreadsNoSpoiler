@@ -101,10 +101,15 @@ static void TSBHideDirectSpoilerLayers(UIView *container) {
     container.backgroundColor = UIColor.clearColor;
     container.userInteractionEnabled = NO;
     for (UIView *subview in container.subviews) {
-        if ([subview isKindOfClass:UIVisualEffectView.class] || subview.class == UIView.class) {
-            subview.hidden = YES;
+        if ([subview isKindOfClass:UIVisualEffectView.class] || TSBIsSpoilerMask(subview)) {
+            // Do not hide carousel views: Threads reuses them and can then
+            // hide the actual image together with the spoiler presentation.
+            if ([subview isKindOfClass:UIVisualEffectView.class]) {
+                ((UIVisualEffectView *)subview).effect = nil;
+            }
+            subview.alpha = 0.0;
             subview.userInteractionEnabled = NO;
-            TSBLog(@"hid direct spoiler layer %@", NSStringFromClass(subview.class));
+            TSBLog(@"neutralized direct spoiler layer %@", NSStringFromClass(subview.class));
         }
     }
 }
@@ -491,9 +496,14 @@ static void TSBHideMasksBelowView(UIView *view) {
     for (UIView *subview in view.subviews) {
         TSBRecordView(subview);
         if (TSBIsSpoilerMask(subview)) {
-            subview.hidden = YES;
+            // Keep the view available to the carousel's reuse machinery;
+            // only neutralize its spoiler appearance.
+            if ([subview isKindOfClass:UIVisualEffectView.class]) {
+                ((UIVisualEffectView *)subview).effect = nil;
+            }
+            subview.alpha = 0.0;
             subview.userInteractionEnabled = NO;
-            TSBLog(@"hid %@", NSStringFromClass(subview.class));
+            TSBLog(@"neutralized %@", NSStringFromClass(subview.class));
             continue;
         }
         TSBHideMasksBelowView(subview);
