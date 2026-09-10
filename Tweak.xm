@@ -456,7 +456,9 @@ static void TSBCheckPendingSpoilers(void) {
         }
         NSInteger samples = [objc_getAssociatedObject(spoilerView, &TSBVisibleSampleCountKey) integerValue] + 1;
         objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, @(samples), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (samples < 2) {
+        // Wait until the spoiler has remained visible for roughly 0.7 seconds.
+        // Briefly passing through the viewport should not trigger the reveal.
+        if (samples < 7) {
             continue;
         }
         TSBAnimateSpoilerRemoval(spoilerView);
