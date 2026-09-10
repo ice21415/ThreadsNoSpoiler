@@ -81,12 +81,14 @@ static void TSBHideDirectSpoilerLayers(UIView *container) {
     }
 }
 
-// The post cell is the stable common owner for its header and spoiler body.
-// Do not inspect label text, subview order, or time formats.
+// Threads renders a post as sibling header/text/media cells inside one feed
+// collection. That collection is the stable common owner for its header and
+// spoiler body. Do not inspect label text, subview order, or time formats.
 static UIView *TSBPostContainer(UIView *view) {
     for (NSUInteger depth = 0; view && depth < 30; depth++, view = view.superview) {
         NSString *name = NSStringFromClass(view.class);
-        if ([name containsString:@"BCNFeedBaseCell"] ||
+        if ([name containsString:@"BCNFeedCollection"] ||
+            [name containsString:@"BCNFeedBaseCell"] ||
             [name containsString:@"BCNFeedInteractiveCell"] ||
             [name containsString:@"BCNPostRow"]) {
             return view;
