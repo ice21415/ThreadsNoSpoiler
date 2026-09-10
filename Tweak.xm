@@ -7,7 +7,6 @@ static NSString * const TSBEnabledKey = @"TSBEnabled";
 static NSString * const TSBDebugKey = @"TSBDebugLogging";
 static NSString * const TSBForceHideContainerKey = @"TSBForceHideContainer";
 static NSString * const TSBShowBadgeKey = @"TSBShowSpoilerBadge";
-static NSString * const TSBShowRemovalAnimationKey = @"TSBShowRemovalAnimation";
 static char TSBSettingsButtonKey;
 static char TSBBadgeKey;
 static char TSBBadgeStatusKey;
@@ -18,6 +17,7 @@ static char TSBVisibleSampleCountKey;
 static char TSBLastVisibleFrameKey;
 static char TSBActiveSpoilerKey;
 static char TSBBadgeOwnerKey;
+static char TSBPreviewingOriginalKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
 static NSHashTable<UIView *> *TSBPendingSpoilerViews;
 static NSHashTable<UIView *> *TSBTrackedSpoilerViews;
@@ -66,14 +66,6 @@ static BOOL TSBShowBadge(void) {
         return YES;
     }
     return [defaults boolForKey:TSBShowBadgeKey];
-}
-
-static BOOL TSBShowRemovalAnimation(void) {
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if ([defaults objectForKey:TSBShowRemovalAnimationKey] == nil) {
-        return YES;
-    }
-    return [defaults boolForKey:TSBShowRemovalAnimationKey];
 }
 
 static void TSBLog(NSString *format, ...) {
@@ -328,6 +320,7 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
 }
 
 @interface TSBSpoilerBadgeLabel : UILabel
+- (void)tsb_handleOriginalPreview:(UILongPressGestureRecognizer *)gesture;
 @end
 
 @implementation TSBSpoilerBadgeLabel
@@ -343,6 +336,31 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
 
 - (void)drawTextInRect:(CGRect)rect {
     [super drawTextInRect:UIEdgeInsetsInsetRect(rect, UIEdgeInsetsMake(1.0, 5.0, 1.0, 5.0))];
+}
+
+- (void)tsb_handleOriginalPreview:(UILongPressGestureRecognizer *)gesture {
+    NSHashTable<UIView *> *owners = objc_getAssociatedObject(self.superview, &TSBBadgeOwnerKey);
+    BOOL showingOriginal = gesture.state == UIGestureRecognizerStateBegan ||
+        gesture.state == UIGestureRecognizerStateChanged;
+    if (showingOriginal) {
+        self.alpha = 0.58;
+        self.transform = CGAffineTransformMakeScale(0.96, 0.96);
+    } else if (gesture.state == UIGestureRecognizerStateEnded ||
+               gesture.state == UIGestureRecognizerStateCancelled ||
+               gesture.state == UIGestureRecognizerStateFailed) {
+        self.alpha = 1.0;
+        self.transform = CGAffineTransformIdentity;
+    } else {
+        return;
+    }
+    for (UIView *spoilerView in owners.allObjects) {
+        if (![objc_getAssociatedObject(spoilerView, &TSBActiveSpoilerKey) boolValue]) continue;
+        objc_setAssociatedObject(spoilerView, &TSBPreviewingOriginalKey,
+                                 showingOriginal ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        BOOL shouldHide = !showingOriginal &&
+            [objc_getAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey) boolValue];
+        TSBOriginalSetHidden(spoilerView, @selector(setHidden:), shouldHide);
+    }
 }
 @end
 
@@ -367,9 +385,15 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         badge.layer.cornerRadius = 4.0;
         badge.clipsToBounds = YES;
         badge.translatesAutoresizingMaskIntoConstraints = YES;
-        badge.userInteractionEnabled = NO;
+        badge.userInteractionEnabled = YES;
         badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
         badge.accessibilityLabel = @"劇透貼文";
+        badge.accessibilityHint = @"按住可查看原始防劇透遮罩";
+        UILongPressGestureRecognizer *previewGesture = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:badge action:@selector(tsb_handleOriginalPreview:)];
+        previewGesture.minimumPressDuration = 0.0;
+        previewGesture.cancelsTouchesInView = YES;
+        [badge addGestureRecognizer:previewGesture];
         [badge sizeToFit];
         [header addSubview:badge];
         objc_setAssociatedObject(header, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -394,85 +418,6 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     }
     objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     badge.hidden = NO;
-}
-
-static void TSBAnimateSpoilerRemoval(UIView *spoilerView) {
-    if (!TSBEnabled() || !TSBShowRemovalAnimation() || spoilerView.superview == nil ||
-        !TSBIsInVisibleViewport(spoilerView) ||
-        [objc_getAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey) boolValue]) {
-        return;
-    }
-
-    // Removal motion is intentionally limited to inline text spoilers.
-    UIView *textCell = spoilerView;
-    while (textCell != nil &&
-           ![NSStringFromClass(textCell.class) containsString:@"BCNFeedTextCell"]) {
-        textCell = textCell.superview;
-    }
-    if (textCell == nil || spoilerView.bounds.size.width < 4.0 ||
-        spoilerView.bounds.size.height < 4.0) {
-        return;
-    }
-
-    UIView *host = TSBOuterFeedCell(spoilerView) ?: textCell;
-    if (host.window == nil) {
-        return;
-    }
-    CGRect targetFrame = [spoilerView convertRect:spoilerView.bounds toView:host];
-    CGRect visibleFrame = CGRectIntersection(targetFrame, host.bounds);
-    if (!CGRectIsNull(visibleFrame) && visibleFrame.size.width >= 4.0 && visibleFrame.size.height >= 4.0) {
-        targetFrame = visibleFrame;
-    }
-    if (CGRectIsNull(targetFrame) || CGRectIsEmpty(targetFrame) ||
-        !isfinite(targetFrame.origin.x) || !isfinite(targetFrame.origin.y) ||
-        targetFrame.size.width < 4.0 || targetFrame.size.height < 4.0) {
-        return;
-    }
-
-    // Preserve only the original inline spoiler surface before setHidden: reveals it.
-    UIView *dissolveView = [[UIView alloc] initWithFrame:targetFrame];
-    dissolveView.userInteractionEnabled = NO;
-    dissolveView.clipsToBounds = YES;
-
-    UIView *snapshot = [host resizableSnapshotViewFromRect:targetFrame
-                                        afterScreenUpdates:NO
-                                             withCapInsets:UIEdgeInsetsZero];
-    if (snapshot == nil) {
-        return;
-    }
-    snapshot.frame = dissolveView.bounds;
-    snapshot.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [dissolveView addSubview:snapshot];
-
-    CAGradientLayer *dissolveMask = [CAGradientLayer layer];
-    dissolveMask.frame = dissolveView.bounds;
-    dissolveMask.startPoint = CGPointMake(0.0, 0.5);
-    dissolveMask.endPoint = CGPointMake(1.0, 0.5);
-    dissolveMask.colors = @[(id)UIColor.clearColor.CGColor,
-                            (id)UIColor.clearColor.CGColor,
-                            (id)UIColor.blackColor.CGColor,
-                            (id)UIColor.blackColor.CGColor];
-    dissolveMask.locations = @[@(-0.20), @(-0.10), @(0.0), @(0.0)];
-    dissolveView.layer.mask = dissolveMask;
-    [host addSubview:dissolveView];
-    objc_setAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CABasicAnimation *wipe = [CABasicAnimation animationWithKeyPath:@"locations"];
-        wipe.fromValue = @[@(-0.20), @(-0.10), @(0.0), @(0.0)];
-        wipe.toValue = @[@(0.90), @(1.0), @(1.10), @(1.20)];
-        wipe.duration = 1.05;
-        wipe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-        dissolveMask.locations = @[@(0.90), @(1.0), @(1.10), @(1.20)];
-        [dissolveMask addAnimation:wipe forKey:@"ThreadsNoSpoilerDissolve"];
-
-        [UIView animateWithDuration:1.05 delay:0.0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
-            dissolveView.alpha = 0.30;
-            dissolveView.transform = CGAffineTransformMakeTranslation(5.0, 0.0);
-        } completion:^(__unused BOOL completed) {
-            [dissolveView removeFromSuperview];
-        }];
-    });
 }
 
 static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
@@ -525,7 +470,6 @@ static void TSBCheckPendingSpoilers(void) {
         if (samples < 10) {
             continue;
         }
-        TSBAnimateSpoilerRemoval(spoilerView);
         objc_setAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         TSBOriginalSetHidden(spoilerView, @selector(setHidden:), YES);
         [TSBPendingSpoilerViews removeObject:spoilerView];
@@ -570,7 +514,9 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
             return;
         }
         TSBUpdateSpoilerBadge(self);
-        if ([objc_getAssociatedObject(self, &TSBRemovalAnimationPlayedKey) boolValue]) {
+        if ([objc_getAssociatedObject(self, &TSBPreviewingOriginalKey) boolValue]) {
+            TSBOriginalSetHidden(self, @selector(setHidden:), NO);
+        } else if ([objc_getAssociatedObject(self, &TSBRemovalAnimationPlayedKey) boolValue]) {
             TSBOriginalSetHidden(self, @selector(setHidden:), YES);
         } else {
             TSBRegisterPendingSpoiler(self);
@@ -593,7 +539,9 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
             return;
         }
         TSBUpdateSpoilerBadge(self);
-        if ([objc_getAssociatedObject(self, &TSBRemovalAnimationPlayedKey) boolValue]) {
+        if ([objc_getAssociatedObject(self, &TSBPreviewingOriginalKey) boolValue]) {
+            TSBOriginalSetHidden(self, @selector(setHidden:), NO);
+        } else if ([objc_getAssociatedObject(self, &TSBRemovalAnimationPlayedKey) boolValue]) {
             TSBOriginalSetHidden(self, @selector(setHidden:), YES);
         } else {
             TSBRegisterPendingSpoiler(self);
@@ -608,6 +556,10 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
 static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     // Only app writes reach this hook. Plugin writes use the original IMP.
     [TSBTrackedSpoilerViews addObject:self];
+    if ([objc_getAssociatedObject(self, &TSBPreviewingOriginalKey) boolValue]) {
+        TSBOriginalSetHidden(self, _cmd, NO);
+        return;
+    }
     objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(!hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (hidden) {
         TSBClearSpoilerBadge(self);
@@ -659,7 +611,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 3;
+    if (section == 0) return 2;
     return section == 2 ? 3 : 1;
 }
 
@@ -685,10 +637,10 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         return cell;
     }
     UISwitch *toggle = [UISwitch new];
-    toggle.tag = indexPath.section == 0 ? (indexPath.row == 0 ? 0 : (indexPath.row == 1 ? 3 : 4)) : (indexPath.section == 1 ? 1 : 2);
-    toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : (toggle.tag == 2 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey] : (toggle.tag == 3 ? TSBShowBadge() : TSBShowRemovalAnimation())));
+    toggle.tag = indexPath.section == 0 ? (indexPath.row == 0 ? 0 : 3) : (indexPath.section == 1 ? 1 : 2);
+    toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : (toggle.tag == 2 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey] : TSBShowBadge()));
     [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
-    cell.textLabel.text = toggle.tag == 0 ? @"Automatically reveal spoilers" : (toggle.tag == 1 ? @"Force-hide spoiler container" : (toggle.tag == 2 ? @"Debug logging" : (toggle.tag == 3 ? @"Show spoiler badge" : @"Show removal animation")));
+    cell.textLabel.text = toggle.tag == 0 ? @"Automatically reveal spoilers" : (toggle.tag == 1 ? @"Force-hide spoiler container" : (toggle.tag == 2 ? @"Debug logging" : @"Show spoiler badge"));
     cell.accessoryView = toggle;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -696,7 +648,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 }
 
 - (void)toggleChanged:(UISwitch *)toggle {
-    NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : (toggle.tag == 2 ? TSBDebugKey : (toggle.tag == 3 ? TSBShowBadgeKey : TSBShowRemovalAnimationKey)));
+    NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : (toggle.tag == 2 ? TSBDebugKey : TSBShowBadgeKey));
     [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:key];
     [NSUserDefaults.standardUserDefaults synchronize];
 }
