@@ -350,6 +350,11 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     return CGSizeMake(size.width + 10.0, size.height + 2.0);
 }
 
+- (CGSize)sizeThatFits:(CGSize)size {
+    CGSize fitted = [super sizeThatFits:size];
+    return CGSizeMake(fitted.width + 10.0, fitted.height + 2.0);
+}
+
 - (void)drawTextInRect:(CGRect)rect {
     [super drawTextInRect:UIEdgeInsetsInsetRect(rect, UIEdgeInsetsMake(1.0, 5.0, 1.0, 5.0))];
 }
@@ -371,6 +376,8 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         badge.textColor = UIColor.systemOrangeColor;
         badge.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.16];
         badge.textAlignment = NSTextAlignmentCenter;
+        badge.lineBreakMode = NSLineBreakByClipping;
+        badge.numberOfLines = 1;
         badge.layer.cornerRadius = 4.0;
         badge.clipsToBounds = YES;
         badge.translatesAutoresizingMaskIntoConstraints = YES;
@@ -389,7 +396,7 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     CGSize size = badge.bounds.size;
     CGFloat x = CGRectGetMaxX(anchorFrame) + 4.0;
     CGFloat y = round(CGRectGetMidY(anchorFrame) - size.height / 2.0);
-    CGRect targetFrame = CGRectMake(x, y, ceil(size.width), ceil(size.height));
+    CGRect targetFrame = CGRectMake(x, y, MAX(36.0, ceil(size.width)), MAX(17.0, ceil(size.height)));
     if (!CGRectEqualToRect(badge.frame, targetFrame)) {
         badge.frame = targetFrame;
     }
