@@ -26,6 +26,24 @@ static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp);
 
+static BOOL TSBIsInVisibleViewport(UIView *view) {
+    UIWindow *window = view.window;
+    if (window == nil || view.superview == nil || view.bounds.size.width < 4.0 ||
+        view.bounds.size.height < 4.0) {
+        return NO;
+    }
+    for (UIView *ancestor = view.superview; ancestor != nil; ancestor = ancestor.superview) {
+        if (ancestor.hidden || ancestor.alpha < 0.01) {
+            return NO;
+        }
+    }
+    CGRect frameInWindow = [view convertRect:view.bounds toView:window];
+    CGRect viewport = UIEdgeInsetsInsetRect(window.bounds, window.safeAreaInsets);
+    CGRect intersection = CGRectIntersection(frameInWindow, viewport);
+    return !CGRectIsNull(intersection) && !CGRectIsEmpty(intersection) &&
+        intersection.size.width >= 4.0 && intersection.size.height >= 4.0;
+}
+
 static BOOL TSBEnabled(void) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if ([defaults objectForKey:TSBEnabledKey] == nil) {
@@ -336,6 +354,7 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
 
 static void TSBAnimateSpoilerRemoval(UIView *spoilerView) {
     if (!TSBEnabled() || !TSBShowRemovalAnimation() || spoilerView.superview == nil ||
+        !TSBIsInVisibleViewport(spoilerView) ||
         [objc_getAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey) boolValue]) {
         return;
     }
@@ -398,14 +417,14 @@ static void TSBAnimateSpoilerRemoval(UIView *spoilerView) {
         CABasicAnimation *wipe = [CABasicAnimation animationWithKeyPath:@"locations"];
         wipe.fromValue = @[@(-0.20), @(-0.10), @(0.0), @(0.0)];
         wipe.toValue = @[@(0.90), @(1.0), @(1.10), @(1.20)];
-        wipe.duration = 0.72;
+        wipe.duration = 1.05;
         wipe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
         dissolveMask.locations = @[@(0.90), @(1.0), @(1.10), @(1.20)];
         [dissolveMask addAnimation:wipe forKey:@"ThreadsNoSpoilerDissolve"];
 
-        [UIView animateWithDuration:0.72 delay:0.0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
-            dissolveView.alpha = 0.12;
-            dissolveView.transform = CGAffineTransformMakeTranslation(3.0, 0.0);
+        [UIView animateWithDuration:1.05 delay:0.0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+            dissolveView.alpha = 0.30;
+            dissolveView.transform = CGAffineTransformMakeTranslation(5.0, 0.0);
         } completion:^(__unused BOOL completed) {
             [dissolveView removeFromSuperview];
         }];
@@ -434,9 +453,8 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBRecordHierarchy(self);
     TSBCaptureSpoilerContext(self);
     TSBUpdateSpoilerBadge(self);
-    TSBAnimateSpoilerRemoval(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
-        self.hidden = YES;
+        self.hidden = TSBIsInVisibleViewport(self);
         return;
     }
     TSBHideDirectSpoilerLayers(self);
@@ -449,9 +467,8 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBRecordHierarchy(self);
     TSBCaptureSpoilerContext(self);
     TSBUpdateSpoilerBadge(self);
-    TSBAnimateSpoilerRemoval(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
-        self.hidden = YES;
+        self.hidden = TSBIsInVisibleViewport(self);
         return;
     }
     TSBHideDirectSpoilerLayers(self);
@@ -462,9 +479,14 @@ static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     BOOL shouldForceHide = TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey];
     if (shouldForceHide) {
-        TSBAnimateSpoilerRemoval(self);
+        BOOL isVisible = TSBIsInVisibleViewport(self);
+        if (isVisible) {
+            TSBAnimateSpoilerRemoval(self);
+        }
+        TSBOriginalSetHidden(self, _cmd, isVisible ? YES : NO);
+        return;
     }
-    TSBOriginalSetHidden(self, _cmd, shouldForceHide ? YES : hidden);
+    TSBOriginalSetHidden(self, _cmd, hidden);
 }
 
 @interface TSBPreferencesController : UITableViewController
