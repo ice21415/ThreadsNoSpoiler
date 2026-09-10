@@ -35,6 +35,13 @@ static void TSBRecordView(UIView *view) {
     }
 }
 
+static void TSBRecordHierarchy(UIView *view) {
+    TSBRecordView(view);
+    for (UIView *subview in view.subviews) {
+        TSBRecordHierarchy(subview);
+    }
+}
+
 static BOOL TSBIsSpoilerMask(UIView *view) {
     NSString *name = NSStringFromClass(view.class).lowercaseString;
     NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
@@ -63,7 +70,7 @@ static void TSBHideMasksBelowView(UIView *view) {
 static void (*TSBOriginalDidMoveToWindow)(id, SEL);
 static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBOriginalDidMoveToWindow(self, _cmd);
-    TSBRecordView(self);
+    TSBRecordHierarchy(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         self.hidden = YES;
         return;
@@ -74,7 +81,7 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
 static void (*TSBOriginalLayoutSubviews)(id, SEL);
 static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBOriginalLayoutSubviews(self, _cmd);
-    TSBRecordView(self);
+    TSBRecordHierarchy(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         self.hidden = YES;
         return;
