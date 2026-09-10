@@ -1,20 +1,17 @@
-Origin: ThreadsNoSpoiler
-Label: Threads No Spoiler
-Suite: stable
-Codename: ios
-Architectures: iphoneos-arm64
-Components: main
-Description: Threads No Spoiler APT repository
-Date: Thu, 10 Sep 2026 07:58:31 +0000
+Date: Thu, 10 Sep 2026 08:07:47 +0000
 MD5Sum:
- 864929b22a20755ec0c9771e6fe6e3fe              537 Packages
- c30fdf0fde746280806eb4ca1651af1f              387 Packages.gz
+ af02c7b2599dade0a1a6bc52bd79316a              537 Packages
+ 6a7bc962b636eb5747d78e96f8900a16              388 Packages.gz
+ 0b056651a298313ea43f4d0d4bdfc73a               38 Release
 SHA1:
- c004b910ea061323d082f1b5bd5ef69ba576ae72              537 Packages
- 04c87f681127fe99c376c3f3c50d3453b4e113f4              387 Packages.gz
+ 764fcd80b717bf25525533200221c3848cf13b5d              537 Packages
+ 0ec1e6f3229aa5456ec7e7df85c2cf02160ba5b3              388 Packages.gz
+ f8b0441340406d9806385f5859f96e40faccdf23               38 Release
 SHA256:
- bf3d5c6edbff269789a49e505db23b7bb09adf1b45aca4c2f80e886b7c4eabe1              537 Packages
- e770d0df53681d0d38505e3d3417bd87b7af1ad382fce954a4cad37d4b42ecd8              387 Packages.gz
+ 1744add21b30a0960332a8ea9bd9c3fbfa98f4723e775ecaa25ba0b46f638589              537 Packages
+ e8bd7381056c28056c7ac9a6c5c939b1e25144827019626e09b21a1ca2650fe0              388 Packages.gz
+ 77fe0a3ad3b63028219beefd59123bb0200e1eca6c9d96983837760eb9cfc9d5               38 Release
 SHA512:
- 17c608dd6772b20a0e46a86405ff9539b029df97b952399d9ac0bcadd5a70367f7f18017f908c12bdd26181227f572d8d31a67ada6f8d527dc15a795f0a50302              537 Packages
- affc71a0c6e8bb3b6714b7a797fceea7815085bbe08094c1f3470808f7aa2129529b33e273435d36eca36b38059a583ddfbf53bd37bd540f1cf1291d134ad0a0              387 Packages.gz
+ ef0892b8b5e338988f2644afbfd93329d0fe4717ad3092f96a0eadfec9e70ba2daa77bb8a20e7bb788ad35e5cae7a46f270c3ad21499cf2f9e51d8c541711075              537 Packages
+ 645206329649c518973794b8944ce02d1767cbddd65701858476791363486b85163caa1aac5f3c31d4feae127c23c77c921f43cc67d9ba2e40af2a7de9c3b6fb              388 Packages.gz
+ a891bbb49cc09622bd51297a8f15c54348c5c55033f67d550b75773214744535ee70671fa6d66d724d54a8e8b6f98ae21c23b6bfb6ef0d77b112f0facda6abdc               38 Release
