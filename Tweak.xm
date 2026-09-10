@@ -24,6 +24,7 @@ static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBCopyPostData(UIView *header);
+static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp);
 
 static BOOL TSBEnabled(void) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
@@ -288,12 +289,42 @@ static void TSBRefreshSpoilerBadgesBelowView(UIView *view) {
     }
 }
 
+static BOOL TSBViewContainsSpoiler(UIView *view) {
+    if ([NSStringFromClass(view.class) containsString:@"BCNSpoilerView"]) return YES;
+    for (UIView *subview in view.subviews) {
+        if (TSBViewContainsSpoiler(subview)) return YES;
+    }
+    return NO;
+}
+
+static void TSBPlaceBadgeOnHeaderPostCells(UICollectionViewCell *header, UIView *metadataTextView) {
+    UICollectionView *collection = [header.superview isKindOfClass:UICollectionView.class] ? (UICollectionView *)header.superview : nil;
+    NSIndexPath *headerIndex = collection ? [collection indexPathForCell:header] : nil;
+    if (!collection || !headerIndex) return;
+    for (UICollectionViewCell *cell in collection.visibleCells) {
+        NSIndexPath *indexPath = [collection indexPathForCell:cell];
+        if (!indexPath || indexPath.section != headerIndex.section || indexPath.item <= headerIndex.item) continue;
+        if ([NSStringFromClass(cell.class) containsString:@"BCNFeedItemHeaderCell"]) break;
+        if (!TSBViewContainsSpoiler(cell)) continue;
+        NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:cell];
+        while (pending.count) {
+            UIView *view = pending.lastObject;
+            [pending removeLastObject];
+            if ([NSStringFromClass(view.class) containsString:@"BCNSpoilerView"]) {
+                TSBPlaceSpoilerBadge(view, metadataTextView);
+            }
+            [pending addObjectsFromArray:view.subviews];
+        }
+    }
+}
+
 static void TSBProcessHeaderCell(UIView *self) {
     UIView *metadataTextView = TSBHeaderMetadataTextView(self);
     UIView *post = TSBPostContainer(self);
     if (post && metadataTextView) {
         objc_setAssociatedObject(self, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
         TSBInstallPostCopyButton(self, metadataTextView);
+        TSBPlaceBadgeOnHeaderPostCells((UICollectionViewCell *)self, metadataTextView);
         TSBRefreshSpoilerBadgesBelowView(post);
     }
 }
@@ -364,6 +395,39 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
         // Never use a corner fallback: wait for the precise timestamp label.
         [badge removeFromSuperview];
         return;
+    }
+    badge.hidden = NO;
+    [badge.superview bringSubviewToFront:badge];
+}
+
+// Direct path used when the header has identified the spoiler in its own
+// following cells. It intentionally bypasses collection-wide lookup.
+static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
+    UILabel *badge = objc_getAssociatedObject(spoilerView, &TSBBadgeKey);
+    if (!TSBShowBadge() || timestamp == nil || timestamp.superview == nil) {
+        [badge removeFromSuperview];
+        return;
+    }
+    if (badge == nil) {
+        badge = [UILabel new];
+        badge.text = @"劇透";
+        badge.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+        badge.textColor = UIColor.secondaryLabelColor;
+        badge.backgroundColor = UIColor.clearColor;
+        badge.textAlignment = NSTextAlignmentCenter;
+        badge.translatesAutoresizingMaskIntoConstraints = NO;
+        badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
+        objc_setAssociatedObject(spoilerView, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    id previousAnchor = objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey);
+    if (badge.superview != timestamp.superview || previousAnchor != timestamp) {
+        [badge removeFromSuperview];
+        [timestamp.superview addSubview:badge];
+        [NSLayoutConstraint activateConstraints:@[
+            [badge.leadingAnchor constraintEqualToAnchor:timestamp.trailingAnchor constant:4],
+            [badge.centerYAnchor constraintEqualToAnchor:timestamp.centerYAnchor]
+        ]];
+        objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_ASSIGN);
     }
     badge.hidden = NO;
     [badge.superview bringSubviewToFront:badge];
