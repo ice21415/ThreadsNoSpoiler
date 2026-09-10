@@ -51,15 +51,17 @@ static BOOL TSBIsSpoilerMask(UIView *view) {
     return namedMask || identifiedMask;
 }
 
-static void TSBHideDirectSpoilerEffect(UIView *container) {
+static void TSBHideDirectSpoilerLayers(UIView *container) {
     if (!TSBEnabled()) {
         return;
     }
+    container.backgroundColor = UIColor.clearColor;
+    container.userInteractionEnabled = NO;
     for (UIView *subview in container.subviews) {
-        if ([subview isKindOfClass:UIVisualEffectView.class]) {
+        if ([subview isKindOfClass:UIVisualEffectView.class] || subview.class == UIView.class) {
             subview.hidden = YES;
             subview.userInteractionEnabled = NO;
-            TSBLog(@"hid direct spoiler effect %@", NSStringFromClass(subview.class));
+            TSBLog(@"hid direct spoiler layer %@", NSStringFromClass(subview.class));
         }
     }
 }
@@ -88,7 +90,7 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
         self.hidden = YES;
         return;
     }
-    TSBHideDirectSpoilerEffect(self);
+    TSBHideDirectSpoilerLayers(self);
     TSBHideMasksBelowView(self);
 }
 
@@ -100,7 +102,7 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
         self.hidden = YES;
         return;
     }
-    TSBHideDirectSpoilerEffect(self);
+    TSBHideDirectSpoilerLayers(self);
     TSBHideMasksBelowView(self);
 }
 
