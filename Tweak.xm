@@ -521,8 +521,8 @@ static void TSBCheckPendingSpoilers(void) {
 
         NSInteger samples = [objc_getAssociatedObject(spoilerView, &TSBVisibleSampleCountKey) integerValue] + 1;
         objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, @(samples), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        // Reveal only after the fully visible text has stopped moving for 1.5 seconds.
-        if (samples < 15) {
+        // Reveal after the fully visible text has stopped moving for about 1 second.
+        if (samples < 10) {
             continue;
         }
         TSBAnimateSpoilerRemoval(spoilerView);
