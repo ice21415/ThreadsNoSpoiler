@@ -20,6 +20,7 @@ static NSMutableSet<NSString *> *TSBTimestampHookedClasses;
 static NSMutableDictionary<NSString *, NSValue *> *TSBTimestampGetterIMPs;
 static NSMutableSet<NSString *> *TSBHeaderHookedClasses;
 static void (*TSBOriginalHeaderLayoutSubviews)(id, SEL);
+static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBCopyPostData(UIView *header);
@@ -247,14 +248,25 @@ static void TSBRefreshSpoilerBadgesBelowView(UIView *view) {
     }
 }
 
-static void TSBHookedHeaderLayoutSubviews(UIView *self, SEL _cmd) {
-    TSBOriginalHeaderLayoutSubviews(self, _cmd);
+static void TSBProcessHeaderCell(UIView *self) {
     UIView *metadataTextView = TSBHeaderMetadataTextView(self);
     UIView *post = TSBPostContainer(self);
     if (post && metadataTextView) {
         objc_setAssociatedObject(post, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
         TSBInstallPostCopyButton(self, metadataTextView);
         TSBRefreshSpoilerBadgesBelowView(post);
+    }
+}
+
+static void TSBHookedHeaderLayoutSubviews(UIView *self, SEL _cmd) {
+    TSBOriginalHeaderLayoutSubviews(self, _cmd);
+    TSBProcessHeaderCell(self);
+}
+
+static void TSBHookedCollectionCellDidMoveToWindow(UICollectionViewCell *self, SEL _cmd) {
+    TSBOriginalCollectionCellDidMoveToWindow(self, _cmd);
+    if ([NSStringFromClass(self.class) containsString:@"BCNFeedItemHeaderCell"]) {
+        TSBProcessHeaderCell(self);
     }
 }
 
@@ -572,6 +584,7 @@ static void TSBInstallHeaderHooks(void) {
         TSBTimestampGetterIMPs = [NSMutableDictionary dictionary];
         TSBHeaderHookedClasses = [NSMutableSet set];
         MSHookMessageEx(UIViewController.class, @selector(viewDidAppear:), (IMP)TSBHookedViewDidAppear, (IMP *)&TSBOriginalViewDidAppear);
+        MSHookMessageEx(UICollectionViewCell.class, @selector(didMoveToWindow), (IMP)TSBHookedCollectionCellDidMoveToWindow, (IMP *)&TSBOriginalCollectionCellDidMoveToWindow);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
             TSBInstallTimestampHooks();
