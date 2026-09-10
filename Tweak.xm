@@ -302,7 +302,7 @@ static void TSBHookedCollectionCellDidMoveToWindow(UICollectionViewCell *self, S
     TSBOriginalCollectionCellDidMoveToWindow(self, _cmd);
     if ([NSStringFromClass(self.class) isEqualToString:@"BCNFeedItemHeaderCell.BCNFeedItemHeaderCell"]) {
         if (self.window == nil) {
-            UILabel *badge = objc_getAssociatedObject(self, &TSBBadgeKey);
+            UIView *badge = objc_getAssociatedObject(self, &TSBBadgeKey);
             [badge removeFromSuperview];
             objc_setAssociatedObject(self, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(self, &TSBBadgeOwnerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -355,7 +355,7 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
     NSHashTable *owners = header ? objc_getAssociatedObject(header, &TSBBadgeOwnerKey) : nil;
     if ([owners containsObject:spoilerView]) [owners removeObject:spoilerView];
     if (header != nil && owners.count == 0) {
-        UILabel *badge = objc_getAssociatedObject(header, &TSBBadgeKey);
+        UIView *badge = objc_getAssociatedObject(header, &TSBBadgeKey);
         [badge removeFromSuperview];
         objc_setAssociatedObject(header, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(header, &TSBBadgeOwnerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -363,37 +363,18 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
     objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, nil, OBJC_ASSOCIATION_ASSIGN);
 }
 
-@interface TSBSpoilerBadgeLabel : UILabel
-- (void)tsb_handleOriginalPreview:(UILongPressGestureRecognizer *)gesture;
+@interface TSBSpoilerBadgeButton : UIButton
+- (void)tsb_beginOriginalPreview:(id)sender;
+- (void)tsb_endOriginalPreview:(id)sender;
 @end
 
-@implementation TSBSpoilerBadgeLabel
-- (CGSize)intrinsicContentSize {
-    CGSize size = [super intrinsicContentSize];
-    return CGSizeMake(size.width + 10.0, size.height + 2.0);
-}
-
-- (CGSize)sizeThatFits:(CGSize)size {
-    CGSize fitted = [super sizeThatFits:size];
-    return CGSizeMake(fitted.width + 10.0, fitted.height + 2.0);
-}
-
-- (void)drawTextInRect:(CGRect)rect {
-    [super drawTextInRect:UIEdgeInsetsInsetRect(rect, UIEdgeInsetsMake(1.0, 5.0, 1.0, 5.0))];
-}
-
-- (void)tsb_handleOriginalPreview:(UILongPressGestureRecognizer *)gesture {
+@implementation TSBSpoilerBadgeButton
+- (void)tsb_setOriginalPreviewVisible:(BOOL)showingOriginal {
     NSHashTable<UIView *> *owners = objc_getAssociatedObject(self.superview, &TSBBadgeOwnerKey);
-    BOOL showingOriginal = gesture.state == UIGestureRecognizerStateBegan ||
-        gesture.state == UIGestureRecognizerStateChanged;
     if (showingOriginal) {
         self.alpha = 0.58;
-    } else if (gesture.state == UIGestureRecognizerStateEnded ||
-               gesture.state == UIGestureRecognizerStateCancelled ||
-               gesture.state == UIGestureRecognizerStateFailed) {
-        self.alpha = 1.0;
     } else {
-        return;
+        self.alpha = 1.0;
     }
     for (UIView *spoilerView in owners.allObjects) {
         if (![objc_getAssociatedObject(spoilerView, &TSBActiveSpoilerKey) boolValue]) continue;
@@ -404,43 +385,43 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
         TSBOriginalSetHidden(spoilerView, @selector(setHidden:), shouldHide);
     }
 }
+
+- (void)tsb_beginOriginalPreview:(id)sender {
+    [self tsb_setOriginalPreviewVisible:YES];
+}
+
+- (void)tsb_endOriginalPreview:(id)sender {
+    [self tsb_setOriginalPreviewVisible:NO];
+}
 @end
 
 // Direct path used when the header has identified the spoiler in its own
 // following cells. It intentionally bypasses collection-wide lookup.
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     UICollectionViewCell *header = TSBHeaderCellContainingView(timestamp);
-    UILabel *badge = header ? objc_getAssociatedObject(header, &TSBBadgeKey) : nil;
+    TSBSpoilerBadgeButton *badge = header ? objc_getAssociatedObject(header, &TSBBadgeKey) : nil;
     if (!TSBShowBadge() || header == nil || timestamp == nil) {
         [badge removeFromSuperview];
         return;
     }
     if (badge == nil) {
-        badge = [TSBSpoilerBadgeLabel new];
-        badge.text = @"劇透";
-        badge.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
-        badge.textColor = UIColor.systemOrangeColor;
+        badge = [TSBSpoilerBadgeButton buttonWithType:UIButtonTypeCustom];
+        [badge setTitle:@"劇透" forState:UIControlStateNormal];
+        badge.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+        [badge setTitleColor:UIColor.systemOrangeColor forState:UIControlStateNormal];
         badge.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.16];
-        badge.textAlignment = NSTextAlignmentCenter;
-        badge.lineBreakMode = NSLineBreakByClipping;
-        badge.numberOfLines = 1;
         badge.layer.cornerRadius = 4.0;
         badge.clipsToBounds = YES;
         badge.translatesAutoresizingMaskIntoConstraints = YES;
-        badge.userInteractionEnabled = YES;
+        badge.exclusiveTouch = YES;
         badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
         badge.accessibilityLabel = @"劇透貼文";
         badge.accessibilityHint = @"按住可查看原始防劇透遮罩";
-        badge.accessibilityTraits = UIAccessibilityTraitButton;
-        UILongPressGestureRecognizer *previewGesture = [[UILongPressGestureRecognizer alloc]
-            initWithTarget:badge action:@selector(tsb_handleOriginalPreview:)];
-        // Start immediately, but cancel when the finger moves far enough to
-        // be a feed scroll instead of a press.
-        previewGesture.minimumPressDuration = 0.0;
-        previewGesture.allowableMovement = 8.0;
-        // Consume taps so the surrounding feed cell does not open the post.
-        previewGesture.cancelsTouchesInView = YES;
-        [badge addGestureRecognizer:previewGesture];
+        [badge addTarget:badge action:@selector(tsb_beginOriginalPreview:)
+          forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
+        [badge addTarget:badge action:@selector(tsb_endOriginalPreview:)
+          forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
+                           UIControlEventTouchCancel | UIControlEventTouchDragExit];
         [badge sizeToFit];
         [header addSubview:badge];
         objc_setAssociatedObject(header, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
