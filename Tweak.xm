@@ -77,34 +77,28 @@ static void TSBHideDirectSpoilerLayers(UIView *container) {
     }
 }
 
-static BOOL TSBIsTimestampLabel(UILabel *label) {
-    NSString *text = label.text ?: @"";
-    NSString *className = NSStringFromClass(label.class).lowercaseString;
-    if (text.length && ([className containsString:@"timestamp"] || [className containsString:@"time"] )) {
-        return YES;
+static UILabel *TSBTimestampLabelForOwner(id owner) {
+    SEL selector = NSSelectorFromString(@"timestampLabel");
+    if (![owner respondsToSelector:selector]) {
+        return nil;
     }
-    static NSRegularExpression *expression;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        expression = [NSRegularExpression regularExpressionWithPattern:@"^(?:\\d+\\s?(?:s|m|h|d|w|mo|y)|\\d+\\s?(?:秒|分鐘|小時|天|週|周|月|年)(?:前)?|剛剛|just now|now)$" options:NSRegularExpressionCaseInsensitive error:nil];
-    });
-    return [expression firstMatchInString:text options:0 range:NSMakeRange(0, text.length)] != nil;
+    id value = ((id (*)(id, SEL))objc_msgSend)(owner, selector);
+    return [value isKindOfClass:UILabel.class] ? value : nil;
 }
 
 static UILabel *TSBFindTimestampLabel(UIView *view) {
-    if ([view isKindOfClass:UILabel.class] && TSBIsTimestampLabel((UILabel *)view)) {
-        return (UILabel *)view;
-    }
+    UILabel *label = TSBTimestampLabelForOwner(view);
+    if (label) return label;
     for (UIView *subview in view.subviews) {
-        UILabel *label = TSBFindTimestampLabel(subview);
-        if (label) return label;
+        UILabel *nestedLabel = TSBFindTimestampLabel(subview);
+        if (nestedLabel) return nestedLabel;
     }
     return nil;
 }
 
 static UILabel *TSBFindNearbyTimestampLabel(UIView *spoilerView) {
     UIView *candidate = spoilerView.superview;
-    for (NSUInteger depth = 0; candidate && depth < 5; depth++, candidate = candidate.superview) {
+    for (NSUInteger depth = 0; candidate && depth < 15; depth++, candidate = candidate.superview) {
         UILabel *label = TSBFindTimestampLabel(candidate);
         if (label) return label;
     }
