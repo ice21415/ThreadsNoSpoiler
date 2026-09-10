@@ -7,13 +7,13 @@ static NSString * const TSBEnabledKey = @"TSBEnabled";
 static NSString * const TSBDebugKey = @"TSBDebugLogging";
 static NSString * const TSBForceHideContainerKey = @"TSBForceHideContainer";
 static NSString * const TSBShowBadgeKey = @"TSBShowSpoilerBadge";
+static NSString * const TSBShowRemovalAnimationKey = @"TSBShowRemovalAnimation";
 static char TSBSettingsButtonKey;
 static char TSBBadgeKey;
 static char TSBBadgeStatusKey;
 static char TSBBadgeAnchorKey;
 static char TSBPostTimestampKey;
-static char TSBCopyButtonKey;
-static char TSBCopyButtonHeaderKey;
+static char TSBRemovalAnimationPlayedKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 static NSMutableOrderedSet<NSString *> *TSBLastSpoilerContext;
@@ -24,7 +24,6 @@ static void (*TSBOriginalHeaderLayoutSubviews)(id, SEL);
 static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
-static void TSBCopyPostData(UIView *header);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp);
 
 static BOOL TSBEnabled(void) {
@@ -41,6 +40,14 @@ static BOOL TSBShowBadge(void) {
         return YES;
     }
     return [defaults boolForKey:TSBShowBadgeKey];
+}
+
+static BOOL TSBShowRemovalAnimation(void) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults objectForKey:TSBShowRemovalAnimationKey] == nil) {
+        return YES;
+    }
+    return [defaults boolForKey:TSBShowRemovalAnimationKey];
 }
 
 static void TSBLog(NSString *format, ...) {
@@ -218,88 +225,11 @@ static UIView *TSBHeaderMetadataTextView(UIView *view) {
     return nil;
 }
 
-@interface TSBPostCopyButton : UIButton
-@end
-
-@implementation TSBPostCopyButton
-- (void)tsb_copyPostData:(id)sender {
-    UIView *header = objc_getAssociatedObject(self, &TSBCopyButtonHeaderKey);
-    TSBCopyPostData(header);
-    [self setTitle:@"Copied" forState:UIControlStateNormal];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self setTitle:@"Copy data" forState:UIControlStateNormal];
-    });
-}
-@end
-
-static void TSBAppendCopyData(NSMutableString *output, UIView *view, NSUInteger depth, NSUInteger *count) {
-    if (*count >= 400 || depth > 20) return;
-    (*count)++;
-    CGRect frame = view.frame;
-    NSString *identifier = view.accessibilityIdentifier ?: @"";
-    NSString *badgeStatus = objc_getAssociatedObject(view, &TSBBadgeStatusKey);
-    if (badgeStatus) [output appendFormat:@"badge-status: %@\n", badgeStatus];
-    NSString *label = view.accessibilityLabel ?: @"";
-    NSString *value = view.accessibilityValue ?: @"";
-    NSString *text = @"";
-    if ([view isKindOfClass:UILabel.class]) text = ((UILabel *)view).text ?: @"";
-    if ([view isKindOfClass:UIButton.class]) text = ((UIButton *)view).currentTitle ?: text;
-    [output appendFormat:@"%*s%@ frame:(%.1f,%.1f,%.1f,%.1f) hidden:%d alpha:%.2f tag:%ld id:%@ axLabel:%@ axValue:%@ text:%@\n",
-        (int)(depth * 2), "", NSStringFromClass(view.class), frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
-        view.hidden, view.alpha, (long)view.tag, identifier, label, value, text];
-    for (UIView *subview in view.subviews) {
-        TSBAppendCopyData(output, subview, depth + 1, count);
-    }
-}
-
-static void TSBCopyPostData(UIView *header) {
-    UIView *post = TSBPostContainer(header) ?: header;
-    NSMutableString *output = [NSMutableString stringWithFormat:@"Threads No Spoiler post runtime data\nheader: %@\npost container: %@\n\n",
-        NSStringFromClass(header.class), NSStringFromClass(post.class)];
-    NSUInteger count = 0;
-    [output appendFormat:@"build: 0.1.20 showBadge:%d\nHEADER FIRST\n", TSBShowBadge()];
-    TSBAppendCopyData(output, header, 0, &count);
-    if ([post isKindOfClass:UICollectionView.class]) {
-        UICollectionView *collection = (UICollectionView *)post;
-        for (UICollectionViewCell *cell in collection.visibleCells) {
-            NSIndexPath *path = [collection indexPathForCell:cell];
-            UICollectionViewCell *matched = TSBHeaderCellForFeedCell(cell);
-            [output appendFormat:@"cell %@ index:%@ matched-header:%@\n",
-                NSStringFromClass(cell.class), path, [collection indexPathForCell:matched]];
-        }
-    }
-    [output appendString:@"\nCOLLECTION TREE (limited)\n"];
-    TSBAppendCopyData(output, post, 0, &count);
-    UIPasteboard.generalPasteboard.string = output;
-}
-
-static void TSBInstallPostCopyButton(UIView *header, UIView *metadataTextView) {
-    TSBPostCopyButton *button = objc_getAssociatedObject(header, &TSBCopyButtonKey);
-    if (button) return;
-    button = [TSBPostCopyButton buttonWithType:UIButtonTypeSystem];
-    [button setTitle:@"Copy data" forState:UIControlStateNormal];
-    button.titleLabel.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
-    button.tintColor = UIColor.secondaryLabelColor;
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.accessibilityIdentifier = @"ThreadsNoSpoilerCopyPostData";
-    objc_setAssociatedObject(button, &TSBCopyButtonHeaderKey, header, OBJC_ASSOCIATION_ASSIGN);
-    [button addTarget:button action:@selector(tsb_copyPostData:) forControlEvents:UIControlEventTouchUpInside];
-    [header addSubview:button];
-    [NSLayoutConstraint activateConstraints:@[
-        [button.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-38],
-        [button.centerYAnchor constraintEqualToAnchor:metadataTextView.centerYAnchor],
-        [button.widthAnchor constraintEqualToConstant:48],
-        [button.heightAnchor constraintEqualToConstant:18]
-    ]];
-    objc_setAssociatedObject(header, &TSBCopyButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
 static void TSBProcessHeaderCell(UIView *self) {
     UIView *metadataTextView = TSBHeaderMetadataTextView(self);
     UIView *post = TSBPostContainer(self);
     if (post && metadataTextView) {
         objc_setAssociatedObject(self, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
-        TSBInstallPostCopyButton(self, metadataTextView);
     }
 }
 
@@ -404,6 +334,60 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     badge.hidden = NO;
 }
 
+static void TSBAnimateSpoilerRemoval(UIView *spoilerView) {
+    if (!TSBEnabled() || !TSBShowRemovalAnimation() || spoilerView.superview == nil || spoilerView.window == nil ||
+        [objc_getAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey) boolValue]) {
+        return;
+    }
+    objc_setAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UIView *parent = spoilerView.superview;
+    CGRect targetFrame = spoilerView.frame;
+    if (targetFrame.size.width < 4.0 || targetFrame.size.height < 4.0) {
+        targetFrame = parent.bounds;
+    }
+
+    UIView *highlight = [[UIView alloc] initWithFrame:targetFrame];
+    highlight.userInteractionEnabled = NO;
+    highlight.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.08];
+    highlight.layer.borderColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.85].CGColor;
+    highlight.layer.borderWidth = 1.5;
+    highlight.layer.cornerRadius = MIN(10.0, CGRectGetHeight(targetFrame) / 2.0);
+    highlight.clipsToBounds = YES;
+    highlight.alpha = 0.0;
+    highlight.transform = CGAffineTransformMakeScale(0.98, 0.98);
+
+    TSBSpoilerBadgeLabel *message = [TSBSpoilerBadgeLabel new];
+    message.text = @"劇透已解除";
+    message.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+    message.textColor = UIColor.whiteColor;
+    message.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.92];
+    message.textAlignment = NSTextAlignmentCenter;
+    message.layer.cornerRadius = 5.0;
+    message.clipsToBounds = YES;
+    message.userInteractionEnabled = NO;
+    [message sizeToFit];
+    CGFloat messageWidth = MAX(76.0, ceil(message.bounds.size.width));
+    CGFloat messageHeight = MAX(20.0, ceil(message.bounds.size.height));
+    message.frame = CGRectMake(round((CGRectGetWidth(highlight.bounds) - messageWidth) / 2.0),
+                               round((CGRectGetHeight(highlight.bounds) - messageHeight) / 2.0),
+                               messageWidth, messageHeight);
+    [highlight addSubview:message];
+    [parent addSubview:highlight];
+
+    [UIView animateWithDuration:0.18 animations:^{
+        highlight.alpha = 1.0;
+        highlight.transform = CGAffineTransformIdentity;
+    } completion:^(__unused BOOL finished) {
+        [UIView animateWithDuration:0.28 delay:0.55 options:UIViewAnimationOptionCurveEaseIn animations:^{
+            highlight.alpha = 0.0;
+            highlight.transform = CGAffineTransformMakeScale(1.015, 1.015);
+        } completion:^(__unused BOOL completed) {
+            [highlight removeFromSuperview];
+        }];
+    }];
+}
+
 static void TSBHideMasksBelowView(UIView *view) {
     if (!TSBEnabled()) {
         return;
@@ -426,6 +410,7 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBRecordHierarchy(self);
     TSBCaptureSpoilerContext(self);
     TSBUpdateSpoilerBadge(self);
+    TSBAnimateSpoilerRemoval(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         self.hidden = YES;
         return;
@@ -440,6 +425,7 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBRecordHierarchy(self);
     TSBCaptureSpoilerContext(self);
     TSBUpdateSpoilerBadge(self);
+    TSBAnimateSpoilerRemoval(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         self.hidden = YES;
         return;
@@ -475,7 +461,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 2;
+    if (section == 0) return 3;
     return section == 2 ? 3 : 1;
 }
 
@@ -501,10 +487,10 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         return cell;
     }
     UISwitch *toggle = [UISwitch new];
-    toggle.tag = indexPath.section == 0 ? (indexPath.row == 0 ? 0 : 3) : (indexPath.section == 1 ? 1 : 2);
-    toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : (toggle.tag == 2 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey] : TSBShowBadge()));
+    toggle.tag = indexPath.section == 0 ? (indexPath.row == 0 ? 0 : (indexPath.row == 1 ? 3 : 4)) : (indexPath.section == 1 ? 1 : 2);
+    toggle.on = toggle.tag == 0 ? TSBEnabled() : (toggle.tag == 1 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] : (toggle.tag == 2 ? [NSUserDefaults.standardUserDefaults boolForKey:TSBDebugKey] : (toggle.tag == 3 ? TSBShowBadge() : TSBShowRemovalAnimation())));
     [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
-    cell.textLabel.text = toggle.tag == 0 ? @"Automatically reveal spoilers" : (toggle.tag == 1 ? @"Force-hide spoiler container" : (toggle.tag == 2 ? @"Debug logging" : @"Show spoiler badge"));
+    cell.textLabel.text = toggle.tag == 0 ? @"Automatically reveal spoilers" : (toggle.tag == 1 ? @"Force-hide spoiler container" : (toggle.tag == 2 ? @"Debug logging" : (toggle.tag == 3 ? @"Show spoiler badge" : @"Show removal animation")));
     cell.accessoryView = toggle;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -512,7 +498,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 }
 
 - (void)toggleChanged:(UISwitch *)toggle {
-    NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : (toggle.tag == 2 ? TSBDebugKey : TSBShowBadgeKey));
+    NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : (toggle.tag == 2 ? TSBDebugKey : (toggle.tag == 3 ? TSBShowBadgeKey : TSBShowRemovalAnimationKey)));
     [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:key];
     [NSUserDefaults.standardUserDefaults synchronize];
 }
