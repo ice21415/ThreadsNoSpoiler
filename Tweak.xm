@@ -242,6 +242,49 @@ static UIView *TSBHeaderMetadataTextView(UIView *view) {
     return nil;
 }
 
+// The bundled Threads binary exposes MoreButtonConfig as part of the feed
+// header layout. Prefer its named control, then use the rightmost compact
+// header button as a resilient fallback when Threads changes its class name.
+static UIView *TSBHeaderMoreButton(UIView *header) {
+    UIView *namedButton = nil;
+    UIView *rightmostButton = nil;
+    CGFloat namedX = -CGFLOAT_MAX;
+    CGFloat rightmostX = -CGFLOAT_MAX;
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:header];
+    while (pending.count) {
+        UIView *view = pending.lastObject;
+        [pending removeLastObject];
+        for (UIView *subview in view.subviews) {
+            [pending addObject:subview];
+        }
+        if (view == header || view.hidden || view.alpha < 0.01 || !view.userInteractionEnabled) continue;
+
+        NSString *className = NSStringFromClass(view.class).lowercaseString;
+        NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
+        NSString *label = view.accessibilityLabel.lowercaseString ?: @"";
+        BOOL looksLikeButton = [view isKindOfClass:UIControl.class] || [className containsString:@"button"];
+        if (!looksLikeButton) continue;
+
+        CGRect frame = [view convertRect:view.bounds toView:header];
+        if (CGRectIsEmpty(frame) || frame.size.width > 72.0 || frame.size.height > 72.0) continue;
+        BOOL namedMoreButton = [className containsString:@"more"] ||
+            [className containsString:@"overflow"] || [className containsString:@"menu"] ||
+            [identifier containsString:@"more"] || [identifier containsString:@"overflow"] ||
+            [identifier containsString:@"menu"] || [label containsString:@"more"] ||
+            [label containsString:@"更多"] || [label containsString:@"選項"];
+        if (namedMoreButton && CGRectGetMaxX(frame) > namedX) {
+            namedButton = view;
+            namedX = CGRectGetMaxX(frame);
+        }
+        if (CGRectGetMidX(frame) > CGRectGetWidth(header.bounds) * 0.60 &&
+            CGRectGetMaxX(frame) > rightmostX) {
+            rightmostButton = view;
+            rightmostX = CGRectGetMaxX(frame);
+        }
+    }
+    return namedButton ?: rightmostButton;
+}
+
 static void TSBProcessHeaderCell(UIView *self) {
     UIView *metadataTextView = TSBHeaderMetadataTextView(self);
     UIView *post = TSBPostContainer(self);
@@ -295,12 +338,13 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     }
     UICollectionViewCell *cell = TSBOuterFeedCell(spoilerView);
     UICollectionViewCell *header = TSBHeaderCellForFeedCell(cell);
-    UIView *anchor = header ? TSBHeaderMetadataTextView(header) : nil;
+    UIView *moreButton = header ? TSBHeaderMoreButton(header) : nil;
+    UIView *anchor = moreButton ?: (header ? TSBHeaderMetadataTextView(header) : nil);
     // Drop the previous association before rebinding to a different header.
     if (objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != anchor) {
         TSBClearSpoilerBadge(spoilerView);
     }
-    NSString *status = !TSBShowBadge() ? @"disabled in settings" : !cell ? @"no outer feed cell" : !header ? @"no preceding visible header/index path" : !anchor ? @"header title identifier missing" : @"anchor resolved; placement requested";
+    NSString *status = !TSBShowBadge() ? @"disabled in settings" : !cell ? @"no outer feed cell" : !header ? @"no preceding visible header/index path" : !anchor ? @"header more button missing" : (moreButton ? @"more button resolved; placement requested" : @"metadata fallback; placement requested");
     objc_setAssociatedObject(spoilerView, &TSBBadgeStatusKey, status, OBJC_ASSOCIATION_COPY_NONATOMIC);
     TSBPlaceSpoilerBadge(spoilerView, anchor);
 }
@@ -413,7 +457,8 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     [owners addObject:spoilerView];
     CGRect anchorFrame = [timestamp convertRect:timestamp.bounds toView:header];
     CGSize size = badge.bounds.size;
-    CGFloat x = CGRectGetMaxX(anchorFrame) + 4.0;
+    // Keep the badge in the header action zone without covering the menu.
+    CGFloat x = MAX(8.0, CGRectGetMinX(anchorFrame) - 8.0 - size.width);
     CGFloat y = round(CGRectGetMidY(anchorFrame) - size.height / 2.0);
     CGRect targetFrame = CGRectMake(x, y, MAX(44.0, ceil(size.width)), MAX(32.0, ceil(size.height)));
     if (!CGRectEqualToRect(badge.frame, targetFrame)) {
