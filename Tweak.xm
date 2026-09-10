@@ -9,6 +9,7 @@ static NSString * const TSBForceHideContainerKey = @"TSBForceHideContainer";
 static NSString * const TSBShowBadgeKey = @"TSBShowSpoilerBadge";
 static char TSBSettingsButtonKey;
 static char TSBBadgeKey;
+static char TSBBadgeAnchorKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 
@@ -76,6 +77,40 @@ static void TSBHideDirectSpoilerLayers(UIView *container) {
     }
 }
 
+static BOOL TSBIsTimestampLabel(UILabel *label) {
+    NSString *text = label.text ?: @"";
+    NSString *className = NSStringFromClass(label.class).lowercaseString;
+    if (text.length && ([className containsString:@"timestamp"] || [className containsString:@"time"] )) {
+        return YES;
+    }
+    static NSRegularExpression *expression;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        expression = [NSRegularExpression regularExpressionWithPattern:@"^(?:\\d+\\s?(?:s|m|h|d|w|mo|y)|\\d+\\s?(?:秒|分鐘|小時|天|週|周|月|年)(?:前)?|剛剛|just now|now)$" options:NSRegularExpressionCaseInsensitive error:nil];
+    });
+    return [expression firstMatchInString:text options:0 range:NSMakeRange(0, text.length)] != nil;
+}
+
+static UILabel *TSBFindTimestampLabel(UIView *view) {
+    if ([view isKindOfClass:UILabel.class] && TSBIsTimestampLabel((UILabel *)view)) {
+        return (UILabel *)view;
+    }
+    for (UIView *subview in view.subviews) {
+        UILabel *label = TSBFindTimestampLabel(subview);
+        if (label) return label;
+    }
+    return nil;
+}
+
+static UILabel *TSBFindNearbyTimestampLabel(UIView *spoilerView) {
+    UIView *candidate = spoilerView.superview;
+    for (NSUInteger depth = 0; candidate && depth < 5; depth++, candidate = candidate.superview) {
+        UILabel *label = TSBFindTimestampLabel(candidate);
+        if (label) return label;
+    }
+    return nil;
+}
+
 static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     UILabel *badge = objc_getAssociatedObject(spoilerView, &TSBBadgeKey);
     UIView *parent = spoilerView.superview;
@@ -87,25 +122,33 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     if (badge == nil) {
         badge = [UILabel new];
         badge.text = @"劇透";
-        badge.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
-        badge.textColor = UIColor.whiteColor;
-        badge.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
+        badge.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+        badge.textColor = UIColor.secondaryLabelColor;
+        badge.backgroundColor = UIColor.clearColor;
         badge.textAlignment = NSTextAlignmentCenter;
-        badge.layer.cornerRadius = 9;
-        badge.layer.masksToBounds = YES;
         badge.translatesAutoresizingMaskIntoConstraints = NO;
         badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
+        objc_setAssociatedObject(spoilerView, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    UILabel *timestamp = TSBFindNearbyTimestampLabel(spoilerView);
+    id previousAnchor = objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey);
+    if (timestamp && (badge.superview != timestamp.superview || previousAnchor != timestamp)) {
+        [badge removeFromSuperview];
+        [timestamp.superview addSubview:badge];
+        [NSLayoutConstraint activateConstraints:@[
+            [badge.leadingAnchor constraintEqualToAnchor:timestamp.trailingAnchor constant:4],
+            [badge.centerYAnchor constraintEqualToAnchor:timestamp.centerYAnchor]
+        ]];
+        objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_ASSIGN);
+    } else if (!timestamp && badge.superview == nil) {
         [parent addSubview:badge];
         [NSLayoutConstraint activateConstraints:@[
             [badge.topAnchor constraintEqualToAnchor:spoilerView.topAnchor constant:8],
-            [badge.trailingAnchor constraintEqualToAnchor:spoilerView.trailingAnchor constant:-8],
-            [badge.widthAnchor constraintGreaterThanOrEqualToConstant:42],
-            [badge.heightAnchor constraintEqualToConstant:22]
+            [badge.trailingAnchor constraintEqualToAnchor:spoilerView.trailingAnchor constant:-8]
         ]];
-        objc_setAssociatedObject(spoilerView, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     badge.hidden = NO;
-    [parent bringSubviewToFront:badge];
+    [badge.superview bringSubviewToFront:badge];
 }
 
 static void TSBHideMasksBelowView(UIView *view) {
