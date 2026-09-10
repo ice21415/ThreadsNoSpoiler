@@ -15,6 +15,7 @@ static char TSBBadgeAnchorKey;
 static char TSBPostTimestampKey;
 static char TSBRemovalAnimationPlayedKey;
 static char TSBVisibleSampleCountKey;
+static char TSBLastVisibleFrameKey;
 static NSMutableSet<NSString *> *TSBHookedClasses;
 static NSHashTable<UIView *> *TSBPendingSpoilerViews;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
@@ -447,18 +448,38 @@ static void TSBCheckPendingSpoilers(void) {
     for (UIView *spoilerView in TSBPendingSpoilerViews.allObjects) {
         if (spoilerView.window == nil) {
             objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(spoilerView, &TSBLastVisibleFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             [TSBPendingSpoilerViews removeObject:spoilerView];
             continue;
         }
-        if (!TSBIsInVisibleViewport(spoilerView)) {
+        UIWindow *window = spoilerView.window;
+        CGRect frameInWindow = [spoilerView convertRect:spoilerView.bounds toView:window];
+        CGRect viewport = UIEdgeInsetsInsetRect(window.bounds, window.safeAreaInsets);
+        BOOL fullyVisible = TSBIsInVisibleViewport(spoilerView) && CGRectContainsRect(viewport, frameInWindow);
+        if (!fullyVisible) {
+            objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, @(0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(spoilerView, &TSBLastVisibleFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            continue;
+        }
+
+        NSValue *lastFrameValue = objc_getAssociatedObject(spoilerView, &TSBLastVisibleFrameKey);
+        CGRect lastFrame = lastFrameValue ? lastFrameValue.CGRectValue : CGRectNull;
+        BOOL positionStable = !CGRectIsNull(lastFrame) &&
+            fabs(CGRectGetMinX(lastFrame) - CGRectGetMinX(frameInWindow)) < 0.5 &&
+            fabs(CGRectGetMinY(lastFrame) - CGRectGetMinY(frameInWindow)) < 0.5 &&
+            fabs(CGRectGetWidth(lastFrame) - CGRectGetWidth(frameInWindow)) < 0.5 &&
+            fabs(CGRectGetHeight(lastFrame) - CGRectGetHeight(frameInWindow)) < 0.5;
+        objc_setAssociatedObject(spoilerView, &TSBLastVisibleFrameKey,
+                                 [NSValue valueWithCGRect:frameInWindow], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!positionStable) {
             objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, @(0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             continue;
         }
+
         NSInteger samples = [objc_getAssociatedObject(spoilerView, &TSBVisibleSampleCountKey) integerValue] + 1;
         objc_setAssociatedObject(spoilerView, &TSBVisibleSampleCountKey, @(samples), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        // Wait until the spoiler has remained visible for roughly 0.7 seconds.
-        // Briefly passing through the viewport should not trigger the reveal.
-        if (samples < 7) {
+        // Reveal only after the fully visible text has stopped moving for 1.5 seconds.
+        if (samples < 15) {
             continue;
         }
         TSBAnimateSpoilerRemoval(spoilerView);
@@ -490,6 +511,7 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     if (self.window == nil) {
         objc_setAssociatedObject(self, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, &TSBLastVisibleFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [TSBPendingSpoilerViews removeObject:self];
         return;
     }
