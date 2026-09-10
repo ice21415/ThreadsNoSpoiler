@@ -294,32 +294,12 @@ static void TSBInstallPostCopyButton(UIView *header, UIView *metadataTextView) {
     objc_setAssociatedObject(header, &TSBCopyButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void TSBRefreshSpoilerBadgesBelowView(UIView *view) {
-    if ([NSStringFromClass(view.class) containsString:@"BCNSpoilerView"]) {
-        TSBUpdateSpoilerBadge(view);
-    }
-    for (UIView *subview in view.subviews) {
-        TSBRefreshSpoilerBadgesBelowView(subview);
-    }
-}
-
-static BOOL __attribute__((unused)) TSBViewContainsSpoiler(UIView *view) {
-    if ([NSStringFromClass(view.class) containsString:@"BCNSpoilerView"]) return YES;
-    for (UIView *subview in view.subviews) {
-        if (TSBViewContainsSpoiler(subview)) return YES;
-    }
-    return NO;
-}
-
 static void TSBProcessHeaderCell(UIView *self) {
     UIView *metadataTextView = TSBHeaderMetadataTextView(self);
     UIView *post = TSBPostContainer(self);
     if (post && metadataTextView) {
-        UILabel *badge = objc_getAssociatedObject(self, &TSBBadgeKey);
-        badge.hidden = YES;
         objc_setAssociatedObject(self, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
         TSBInstallPostCopyButton(self, metadataTextView);
-        TSBRefreshSpoilerBadgesBelowView(post);
     }
 }
 
@@ -332,11 +312,6 @@ static void TSBHookedCollectionCellDidMoveToWindow(UICollectionViewCell *self, S
     TSBOriginalCollectionCellDidMoveToWindow(self, _cmd);
     if ([NSStringFromClass(self.class) isEqualToString:@"BCNFeedItemHeaderCell.BCNFeedItemHeaderCell"]) {
         TSBProcessHeaderCell(self);
-    }
-    if (self.window) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.window) TSBRefreshSpoilerBadgesBelowView(TSBPostContainer(self) ?: self);
-        });
     }
 }
 
@@ -385,6 +360,7 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         badge.translatesAutoresizingMaskIntoConstraints = YES;
         badge.userInteractionEnabled = NO;
         badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
+        [badge sizeToFit];
         [header addSubview:badge];
         objc_setAssociatedObject(header, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -393,14 +369,15 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         [header addSubview:badge];
     }
     CGRect anchorFrame = [timestamp convertRect:timestamp.bounds toView:header];
-    [badge sizeToFit];
     CGSize size = badge.bounds.size;
     CGFloat x = CGRectGetMaxX(anchorFrame) + 4.0;
     CGFloat y = round(CGRectGetMidY(anchorFrame) - size.height / 2.0);
-    badge.frame = CGRectMake(x, y, ceil(size.width), ceil(size.height));
+    CGRect targetFrame = CGRectMake(x, y, ceil(size.width), ceil(size.height));
+    if (!CGRectEqualToRect(badge.frame, targetFrame)) {
+        badge.frame = targetFrame;
+    }
     objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_ASSIGN);
     badge.hidden = NO;
-    [header bringSubviewToFront:badge];
 }
 
 static void TSBHideMasksBelowView(UIView *view) {
