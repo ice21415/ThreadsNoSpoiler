@@ -273,11 +273,40 @@ static UIView *TSBHeaderMoreButton(UIView *header) {
     return namedButton;
 }
 
+static UIView *TSBHeaderFollowButton(UIView *header) {
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:header];
+    while (pending.count) {
+        UIView *view = pending.lastObject;
+        [pending removeLastObject];
+        if (view.hidden || view.alpha < 0.01 ||
+            [view.accessibilityIdentifier isEqualToString:@"ThreadsNoSpoilerBadge"]) continue;
+        [pending addObjectsFromArray:view.subviews];
+        NSString *name = NSStringFromClass(view.class).lowercaseString;
+        NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
+        NSString *label = view.accessibilityLabel.lowercaseString ?: @"";
+        NSString *title = [view isKindOfClass:UIButton.class] ? ((UIButton *)view).currentTitle.lowercaseString : @"";
+        BOOL namedFollow = ([name containsString:@"follow"] && [name containsString:@"button"]) ||
+            [identifier containsString:@"follow-button"] || [identifier containsString:@"follow_button"];
+        BOOL followText = [label isEqualToString:@"追蹤"] || [label isEqualToString:@"关注"] ||
+            [label isEqualToString:@"follow"] || [title isEqualToString:@"追蹤"] ||
+            [title isEqualToString:@"关注"] || [title isEqualToString:@"follow"];
+        CGRect frame = [view convertRect:view.bounds toView:header];
+        if ((namedFollow || followText) && frame.size.width > 0 && frame.size.width <= 140 &&
+            frame.size.height > 0 && frame.size.height <= 60) return view;
+    }
+    return nil;
+}
+
 static void TSBProcessHeaderCell(UIView *self) {
     UIView *metadataTextView = TSBHeaderMetadataTextView(self);
     UIView *post = TSBPostContainer(self);
     if (post && metadataTextView) {
         objc_setAssociatedObject(self, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
+    }
+    // Native layout can move the follow control after topic text wraps.
+    NSHashTable *owners = objc_getAssociatedObject(self, &TSBBadgeOwnerKey);
+    for (UIView *owner in owners.allObjects) {
+        TSBUpdateSpoilerBadge(owner);
     }
 }
 
@@ -434,8 +463,15 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     CGFloat trailing = hasMenu ? CGRectGetMinX(anchorFrame) - 8.0 : CGRectGetWidth(header.bounds) - 56.0;
     CGFloat x = MAX(8.0, trailing - size.width);
     CGFloat y = round(CGRectGetMidY(anchorFrame) - size.height / 2.0);
+    UIView *follow = TSBHeaderFollowButton(header);
+    if (follow) {
+        CGRect followFrame = [follow convertRect:follow.bounds toView:header];
+        x = MAX(8.0, MIN(CGRectGetMidX(followFrame) - size.width / 2.0,
+                        CGRectGetWidth(header.bounds) - size.width - 8.0));
+        y = CGRectGetMaxY(followFrame) + 4.0;
+    }
     CGRect targetFrame = CGRectMake(x, y, MAX(44.0, ceil(size.width)), MAX(32.0, ceil(size.height)));
-    if (metadata && metadata.superview) {
+    if (!follow && metadata && metadata.superview) {
         CGRect titleFrame = [metadata convertRect:metadata.bounds toView:header];
         if (CGRectIntersectsRect(CGRectInset(targetFrame, -8.0, 0), titleFrame)) {
             titleFrame.size.width = MAX(0.0, x - 8.0 - CGRectGetMinX(titleFrame));
