@@ -28,16 +28,8 @@ static NSMutableSet<NSString *> *TSBHeaderHookedClasses;
 static void (*TSBOriginalHeaderLayoutSubviews)(id, SEL);
 static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
 static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
-static NSMutableDictionary<NSString *, NSValue *> *TSBMediaSpoilerGetterIMPs;
-
-static IMP TSBMediaSpoilerOriginal(id object) {
-    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
-        NSValue *value = TSBMediaSpoilerGetterIMPs[NSStringFromClass(cls)];
-        if (value) return (IMP)value.pointerValue;
-    }
-    return NULL;
-}
-
+static void (*TSBOriginalSetAlpha)(id, SEL, CGFloat);
+static char TSBRequestedAlphaKey;
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp);
 static void TSBClearSpoilerBadge(UIView *spoilerView);
@@ -76,6 +68,21 @@ static BOOL TSBShowBadge(void) {
     return [defaults boolForKey:TSBShowBadgeKey];
 }
 
+// Preserve the native spoiler model and hierarchy so badges and previews
+// remain available. Suppress only the concrete spoiler overlay's opacity.
+static void TSBApplySpoilerPresentation(UIView *view) {
+    if (!TSBOriginalSetAlpha) return;
+    NSNumber *requested = objc_getAssociatedObject(view, &TSBRequestedAlphaKey);
+    BOOL preview = [objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue];
+    CGFloat alpha = preview ? 1.0 : TSBEnabled() ? 0.0 : requested ? requested.doubleValue : 1.0;
+    TSBOriginalSetAlpha(view, @selector(setAlpha:), alpha);
+}
+
+static void TSBHookedSetAlpha(UIView *self, SEL _cmd, CGFloat alpha) {
+    objc_setAssociatedObject(self, &TSBRequestedAlphaKey, @(alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    TSBApplySpoilerPresentation(self);
+}
+
 static void TSBLog(NSString *format, ...) {
     (void)format;
 }
@@ -91,35 +98,6 @@ static void TSBRecordHierarchy(UIView *view) {
     TSBRecordView(view);
     for (UIView *subview in view.subviews) {
         TSBRecordHierarchy(subview);
-    }
-}
-
-static BOOL TSBIsSpoilerMask(UIView *view) {
-    NSString *name = NSStringFromClass(view.class).lowercaseString;
-    NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
-    BOOL namedMask = [name containsString:@"spoiler"] &&
-        ([name containsString:@"mask"] || [name containsString:@"overlay"] || [name containsString:@"blur"]);
-    BOOL identifiedMask = [identifier containsString:@"spoiler"] || [identifier containsString:@"mask"];
-    return namedMask || identifiedMask;
-}
-
-static void TSBHideDirectSpoilerLayers(UIView *container) {
-    if (!TSBEnabled()) {
-        return;
-    }
-    container.backgroundColor = UIColor.clearColor;
-    container.userInteractionEnabled = NO;
-    for (UIView *subview in container.subviews) {
-        if ([subview isKindOfClass:UIVisualEffectView.class] || TSBIsSpoilerMask(subview)) {
-            // Do not hide carousel views: Threads reuses them and can then
-            // hide the actual image together with the spoiler presentation.
-            if ([subview isKindOfClass:UIVisualEffectView.class]) {
-                ((UIVisualEffectView *)subview).effect = nil;
-            }
-            subview.alpha = 0.0;
-            subview.userInteractionEnabled = NO;
-            TSBLog(@"neutralized direct spoiler layer %@", NSStringFromClass(subview.class));
-        }
     }
 }
 
@@ -247,55 +225,6 @@ static UIView *TSBHeaderMetadataTextView(UIView *view) {
         if (result) return result;
     }
     return nil;
-}
-
-// Read-side override only: never write the server model or composer state.
-// Carousel pages created later read the same unspoiled attachment flag.
-static BOOL TSBMediaSpoilerBool(id self, SEL selector) {
-    if (TSBEnabled()) return NO;
-    IMP original = TSBMediaSpoilerOriginal(self);
-    return original ? ((BOOL (*)(id, SEL))original)(self, selector) : NO;
-}
-
-static id TSBMediaSpoilerObject(id self, SEL selector) {
-    IMP original = TSBMediaSpoilerOriginal(self);
-    id value = original ? ((id (*)(id, SEL))original)(self, selector) : nil;
-    return TSBEnabled() && [value isKindOfClass:NSNumber.class] ? @NO : value;
-}
-
-static void TSBInstallMediaSpoilerHooks(void) {
-    SEL selector = NSSelectorFromString(@"isSpoilerMedia");
-    unsigned int count = 0;
-    Class *classes = objc_copyClassList(&count);
-    for (unsigned int i = 0; i < count; i++) {
-        Class cls = classes[i];
-        NSString *name = NSStringFromClass(cls);
-        // Limit the override to immutable feed fragment implementations.
-        if (![name containsString:@"Fragment"] || ![name hasSuffix:@"Impl"] ||
-            [name containsString:@"Composer"] || TSBMediaSpoilerGetterIMPs[name]) continue;
-        unsigned int methodCount = 0;
-        Method *methods = class_copyMethodList(cls, &methodCount);
-        for (unsigned int j = 0; j < methodCount; j++) {
-            Method method = methods[j];
-            if (method_getName(method) != selector || method_getNumberOfArguments(method) != 2) continue;
-            char type[32] = {0};
-            method_getReturnType(method, type, sizeof(type));
-            IMP replacement = NULL;
-            if (!strcmp(type, @encode(BOOL)) || !strcmp(type, "B") || !strcmp(type, "c")) {
-                replacement = (IMP)TSBMediaSpoilerBool;
-            } else if (type[0] == '@') {
-                replacement = (IMP)TSBMediaSpoilerObject;
-            }
-            if (replacement) {
-                IMP original = NULL;
-                MSHookMessageEx(cls, selector, replacement, &original);
-                if (original) TSBMediaSpoilerGetterIMPs[name] = [NSValue valueWithPointer:(const void *)original];
-            }
-            break;
-        }
-        free(methods);
-    }
-    free(classes);
 }
 
 // The bundled Threads binary exposes MoreButtonConfig as part of the feed
@@ -439,6 +368,7 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
         BOOL shouldHide = !showingOriginal &&
             [objc_getAssociatedObject(spoilerView, &TSBRemovalAnimationPlayedKey) boolValue];
         TSBOriginalSetHidden(spoilerView, @selector(setHidden:), shouldHide);
+        TSBApplySpoilerPresentation(spoilerView);
     }
 }
 
@@ -547,27 +477,6 @@ static void TSBCheckPendingSpoilers(void) {
     }
 }
 
-static void TSBHideMasksBelowView(UIView *view) {
-    if (!TSBEnabled()) {
-        return;
-    }
-    for (UIView *subview in view.subviews) {
-        TSBRecordView(subview);
-        if (TSBIsSpoilerMask(subview)) {
-            // Keep the view available to the carousel's reuse machinery;
-            // only neutralize its spoiler appearance.
-            if ([subview isKindOfClass:UIVisualEffectView.class]) {
-                ((UIVisualEffectView *)subview).effect = nil;
-            }
-            subview.alpha = 0.0;
-            subview.userInteractionEnabled = NO;
-            TSBLog(@"neutralized %@", NSStringFromClass(subview.class));
-            continue;
-        }
-        TSBHideMasksBelowView(subview);
-    }
-}
-
 static BOOL TSBIsSpoilerContainer(UIView *view) {
     return [NSStringFromClass(view.class) containsString:@"BCNSpoilerView"];
 }
@@ -586,8 +495,7 @@ static void TSBRevealCarouselSpoilersIfNeeded(UIView *spoilerView) {
         [pending removeLastObject];
         if ((view == spoilerView || TSBIsSpoilerContainer(view)) &&
             ![objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue]) {
-            TSBHideDirectSpoilerLayers(view);
-            TSBHideMasksBelowView(view);
+            TSBApplySpoilerPresentation(view);
         }
         [pending addObjectsFromArray:view.subviews];
     }
@@ -596,6 +504,7 @@ static void TSBRevealCarouselSpoilersIfNeeded(UIView *spoilerView) {
 static void (*TSBOriginalDidMoveToWindow)(id, SEL);
 static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBOriginalDidMoveToWindow(self, _cmd);
+    TSBApplySpoilerPresentation(self);
     if (self.window == nil) {
         TSBClearSpoilerBadge(self);
         objc_setAssociatedObject(self, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -631,6 +540,7 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
 static void (*TSBOriginalLayoutSubviews)(id, SEL);
 static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBOriginalLayoutSubviews(self, _cmd);
+    TSBApplySpoilerPresentation(self);
     TSBRecordHierarchy(self);
     TSBCaptureSpoilerContext(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
@@ -653,6 +563,7 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
 }
 
 static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
+    TSBApplySpoilerPresentation(self);
     // Only app writes reach this hook. Plugin writes use the original IMP.
     [TSBTrackedSpoilerViews addObject:self];
     if ([objc_getAssociatedObject(self, &TSBPreviewingOriginalKey) boolValue]) {
@@ -802,6 +713,7 @@ static void TSBInstallSpoilerHooks(void) {
         MSHookMessageEx(cls, @selector(didMoveToWindow), (IMP)TSBHookedDidMoveToWindow, (IMP *)&TSBOriginalDidMoveToWindow);
         MSHookMessageEx(cls, @selector(layoutSubviews), (IMP)TSBHookedLayoutSubviews, (IMP *)&TSBOriginalLayoutSubviews);
         MSHookMessageEx(cls, @selector(setHidden:), (IMP)TSBHookedSetHidden, (IMP *)&TSBOriginalSetHidden);
+        MSHookMessageEx(cls, @selector(setAlpha:), (IMP)TSBHookedSetAlpha, (IMP *)&TSBOriginalSetAlpha);
         [TSBHookedClasses addObject:name];
         TSBLog(@"hooked %@", name);
         // The original IMP storage is intentionally single-use: one concrete
@@ -872,8 +784,6 @@ static void TSBInstallHeaderHooks(void) {
 
 %ctor {
     @autoreleasepool {
-        TSBMediaSpoilerGetterIMPs = [NSMutableDictionary dictionary];
-        TSBInstallMediaSpoilerHooks();
         TSBHookedClasses = [NSMutableSet set];
         TSBPendingSpoilerViews = [NSHashTable weakObjectsHashTable];
         TSBTrackedSpoilerViews = [NSHashTable weakObjectsHashTable];
@@ -890,13 +800,11 @@ static void TSBInstallHeaderHooks(void) {
         MSHookMessageEx(UICollectionViewCell.class, @selector(didMoveToWindow), (IMP)TSBHookedCollectionCellDidMoveToWindow, (IMP *)&TSBOriginalCollectionCellDidMoveToWindow);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
-            TSBInstallMediaSpoilerHooks();
             // Legacy timestamp getter hooks disabled; use the observed title identifier.
             TSBInstallHeaderHooks();
         });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
-            TSBInstallMediaSpoilerHooks();
             // Legacy timestamp getter hooks disabled; use the observed title identifier.
             TSBInstallHeaderHooks();
         });
