@@ -16,6 +16,10 @@ static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 static NSMutableOrderedSet<NSString *> *TSBLastSpoilerContext;
 static NSMutableSet<NSString *> *TSBTimestampHookedClasses;
 static NSMutableDictionary<NSString *, NSValue *> *TSBTimestampGetterIMPs;
+static NSMutableSet<NSString *> *TSBHeaderHookedClasses;
+static void (*TSBOriginalHeaderLayoutSubviews)(id, SEL);
+
+static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 
 static BOOL TSBEnabled(void) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
@@ -155,6 +159,39 @@ static void TSBRegisterTimestampLabel(UIView *header, UILabel *label) {
     }
 }
 
+// In this Threads build, author and timestamp are CoreText runs in this exact
+// header component, rather than separate UILabel instances.
+static UIView *TSBHeaderMetadataTextView(UIView *view) {
+    NSString *name = NSStringFromClass(view.class);
+    if ([name containsString:@"IGCoreTextView"] && ![name containsString:@"DeclarativeWrapper"]) {
+        return view;
+    }
+    for (UIView *subview in view.subviews) {
+        UIView *result = TSBHeaderMetadataTextView(subview);
+        if (result) return result;
+    }
+    return nil;
+}
+
+static void TSBRefreshSpoilerBadgesBelowView(UIView *view) {
+    if ([NSStringFromClass(view.class) containsString:@"BCNSpoilerView"]) {
+        TSBUpdateSpoilerBadge(view);
+    }
+    for (UIView *subview in view.subviews) {
+        TSBRefreshSpoilerBadgesBelowView(subview);
+    }
+}
+
+static void TSBHookedHeaderLayoutSubviews(UIView *self, SEL _cmd) {
+    TSBOriginalHeaderLayoutSubviews(self, _cmd);
+    UIView *metadataTextView = TSBHeaderMetadataTextView(self);
+    UIView *post = TSBPostContainer(self);
+    if (post && metadataTextView) {
+        objc_setAssociatedObject(post, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
+        TSBRefreshSpoilerBadgesBelowView(post);
+    }
+}
+
 static IMP TSBOriginalTimestampGetter(id object) {
     for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
         NSValue *stored = TSBTimestampGetterIMPs[NSStringFromClass(cls)];
@@ -194,7 +231,7 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     UIView *post = TSBPostContainer(spoilerView);
     id mappedTimestamp = post ? objc_getAssociatedObject(post, &TSBPostTimestampKey) : nil;
     // This is only the label returned by Threads' own timestampLabel getter.
-    UILabel *timestamp = [mappedTimestamp isKindOfClass:UILabel.class] ? mappedTimestamp : nil;
+    UIView *timestamp = [mappedTimestamp isKindOfClass:UIView.class] ? mappedTimestamp : nil;
     id previousAnchor = objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey);
     if (timestamp && (badge.superview != timestamp.superview || previousAnchor != timestamp)) {
         [badge removeFromSuperview];
@@ -442,6 +479,24 @@ static void TSBInstallTimestampHooks(void) {
     free(classes);
 }
 
+static void TSBInstallHeaderHooks(void) {
+    int classCount = objc_getClassList(NULL, 0);
+    __unsafe_unretained Class *classes = (__unsafe_unretained Class *)calloc((size_t)classCount, sizeof(Class));
+    classCount = objc_getClassList(classes, classCount);
+    for (int index = 0; index < classCount; index++) {
+        Class cls = classes[index];
+        NSString *name = NSStringFromClass(cls);
+        if (![name containsString:@"BCNFeedItemHeaderCell"] || [TSBHeaderHookedClasses containsObject:name]) {
+            continue;
+        }
+        MSHookMessageEx(cls, @selector(layoutSubviews), (IMP)TSBHookedHeaderLayoutSubviews, (IMP *)&TSBOriginalHeaderLayoutSubviews);
+        [TSBHeaderHookedClasses addObject:name];
+        TSBLog(@"hooked header metadata on %@", name);
+        break;
+    }
+    free(classes);
+}
+
 %ctor {
     @autoreleasepool {
         TSBHookedClasses = [NSMutableSet set];
@@ -449,14 +504,17 @@ static void TSBInstallTimestampHooks(void) {
         TSBLastSpoilerContext = [NSMutableOrderedSet orderedSet];
         TSBTimestampHookedClasses = [NSMutableSet set];
         TSBTimestampGetterIMPs = [NSMutableDictionary dictionary];
+        TSBHeaderHookedClasses = [NSMutableSet set];
         MSHookMessageEx(UIViewController.class, @selector(viewDidAppear:), (IMP)TSBHookedViewDidAppear, (IMP *)&TSBOriginalViewDidAppear);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
             TSBInstallTimestampHooks();
+            TSBInstallHeaderHooks();
         });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
             TSBInstallTimestampHooks();
+            TSBInstallHeaderHooks();
         });
     }
 }
