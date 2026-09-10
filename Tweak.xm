@@ -394,8 +394,8 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         // be a feed scroll instead of a press.
         previewGesture.minimumPressDuration = 0.0;
         previewGesture.allowableMovement = 8.0;
-        // Let the feed keep receiving a scroll gesture when the touch moves.
-        previewGesture.cancelsTouchesInView = NO;
+        // Consume taps so the surrounding feed cell does not open the post.
+        previewGesture.cancelsTouchesInView = YES;
         [badge addGestureRecognizer:previewGesture];
         [badge sizeToFit];
         [header addSubview:badge];
