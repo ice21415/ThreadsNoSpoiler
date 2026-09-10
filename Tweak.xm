@@ -101,6 +101,19 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
     for (NSUInteger depth = 0; candidate && depth < 30; depth++, candidate = candidate.superview) {
         [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"parent[%lu] %@ (children: %lu)",
             (unsigned long)depth, NSStringFromClass(candidate.class), (unsigned long)candidate.subviews.count]];
+        if ([candidate isKindOfClass:UICollectionView.class]) {
+            NSArray<__kindof UICollectionViewCell *> *visibleCells = ((UICollectionView *)candidate).visibleCells;
+            for (UICollectionViewCell *cell in visibleCells) {
+                if (TSBLastSpoilerContext.count >= 120) break;
+                [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"collection[%lu] cell %@ (children: %lu)",
+                    (unsigned long)depth, NSStringFromClass(cell.class), (unsigned long)cell.subviews.count]];
+                for (UIView *child in cell.subviews) {
+                    if (TSBLastSpoilerContext.count >= 120) break;
+                    [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"  cell-child %@ (children: %lu)",
+                        NSStringFromClass(child.class), (unsigned long)child.subviews.count]];
+                }
+            }
+        }
     }
     UIView *post = TSBPostContainer(spoilerView);
     if (post) {
