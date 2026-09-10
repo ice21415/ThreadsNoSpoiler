@@ -453,13 +453,13 @@ static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
     }
 }
 
-static void TSBRehideSpoilerLayersIfNeeded(UIView *spoilerView);
+static void TSBRevealCarouselSpoilersIfNeeded(UIView *spoilerView);
 
 static void TSBCheckPendingSpoilers(void) {
     for (UIView *view in TSBTrackedSpoilerViews.allObjects) {
-        // Carousel cells are reused and can restore their blur layers without
-        // triggering a new layout pass on the spoiler container.
-        TSBRehideSpoilerLayersIfNeeded(view);
+        // A carousel can reuse an off-screen page without sending it through
+        // a layout pass. Refresh every spoiler page in that post together.
+        TSBRevealCarouselSpoilersIfNeeded(view);
         TSBUpdateSpoilerBadge(view);
     }
     if (!TSBEnabled() || ![NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
@@ -510,15 +510,29 @@ static void TSBHideMasksBelowView(UIView *view) {
     }
 }
 
-static void TSBRehideSpoilerLayersIfNeeded(UIView *spoilerView) {
+static BOOL TSBIsSpoilerContainer(UIView *view) {
+    return [NSStringFromClass(view.class) containsString:@"BCNSpoilerView"];
+}
+
+static void TSBRevealCarouselSpoilersIfNeeded(UIView *spoilerView) {
     if (!TSBEnabled() ||
         [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] ||
-        spoilerView.window == nil || spoilerView.hidden ||
+        spoilerView.window == nil ||
         [objc_getAssociatedObject(spoilerView, &TSBPreviewingOriginalKey) boolValue]) {
         return;
     }
-    TSBHideDirectSpoilerLayers(spoilerView);
-    TSBHideMasksBelowView(spoilerView);
+    UIView *post = TSBPostContainer(spoilerView) ?: spoilerView;
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:post];
+    while (pending.count) {
+        UIView *view = pending.lastObject;
+        [pending removeLastObject];
+        if ((view == spoilerView || TSBIsSpoilerContainer(view)) &&
+            ![objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue]) {
+            TSBHideDirectSpoilerLayers(view);
+            TSBHideMasksBelowView(view);
+        }
+        [pending addObjectsFromArray:view.subviews];
+    }
 }
 
 static void (*TSBOriginalDidMoveToWindow)(id, SEL);
@@ -553,8 +567,7 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
         }
         return;
     }
-    TSBHideDirectSpoilerLayers(self);
-    TSBHideMasksBelowView(self);
+    TSBRevealCarouselSpoilersIfNeeded(self);
 }
 
 static void (*TSBOriginalLayoutSubviews)(id, SEL);
@@ -578,8 +591,7 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
         }
         return;
     }
-    TSBHideDirectSpoilerLayers(self);
-    TSBHideMasksBelowView(self);
+    TSBRevealCarouselSpoilersIfNeeded(self);
 }
 
 static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
@@ -617,11 +629,10 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         return;
     }
     TSBOriginalSetHidden(self, _cmd, hidden);
-    // The carousel may repopulate descendant layers immediately after it
-    // restores a reused page. Re-apply on the next main-loop turn as well as
-    // in the visibility timer above, so the old page does not remain blurred.
+    // Reveal every page belonging to this post after Threads restores a
+    // reused carousel page, not only the page currently on screen.
     dispatch_async(dispatch_get_main_queue(), ^{
-        TSBRehideSpoilerLayersIfNeeded(self);
+        TSBRevealCarouselSpoilersIfNeeded(self);
     });
 }
 
