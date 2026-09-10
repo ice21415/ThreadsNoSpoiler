@@ -341,6 +341,20 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     TSBPlaceSpoilerBadge(spoilerView, anchor);
 }
 
+@interface TSBSpoilerBadgeLabel : UILabel
+@end
+
+@implementation TSBSpoilerBadgeLabel
+- (CGSize)intrinsicContentSize {
+    CGSize size = [super intrinsicContentSize];
+    return CGSizeMake(size.width + 10.0, size.height + 2.0);
+}
+
+- (void)drawTextInRect:(CGRect)rect {
+    [super drawTextInRect:UIEdgeInsetsInsetRect(rect, UIEdgeInsetsMake(1.0, 5.0, 1.0, 5.0))];
+}
+@end
+
 // Direct path used when the header has identified the spoiler in its own
 // following cells. It intentionally bypasses collection-wide lookup.
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
@@ -351,15 +365,18 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         return;
     }
     if (badge == nil) {
-        badge = [UILabel new];
+        badge = [TSBSpoilerBadgeLabel new];
         badge.text = @"劇透";
-        badge.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
-        badge.textColor = UIColor.secondaryLabelColor;
-        badge.backgroundColor = UIColor.clearColor;
+        badge.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+        badge.textColor = UIColor.systemOrangeColor;
+        badge.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.16];
         badge.textAlignment = NSTextAlignmentCenter;
+        badge.layer.cornerRadius = 4.0;
+        badge.clipsToBounds = YES;
         badge.translatesAutoresizingMaskIntoConstraints = YES;
         badge.userInteractionEnabled = NO;
         badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
+        badge.accessibilityLabel = @"劇透貼文";
         [badge sizeToFit];
         [header addSubview:badge];
         objc_setAssociatedObject(header, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
