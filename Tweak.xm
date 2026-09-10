@@ -242,6 +242,7 @@ static UIView *TSBHeaderMoreButton(UIView *header) {
         for (UIView *subview in view.subviews) {
             [pending addObject:subview];
         }
+        if ([view.accessibilityIdentifier isEqualToString:@"ThreadsNoSpoilerBadge"]) continue;
         if (view == header || view.hidden || view.alpha < 0.01 || !view.userInteractionEnabled) continue;
 
         NSString *className = NSStringFromClass(view.class).lowercaseString;
@@ -267,7 +268,9 @@ static UIView *TSBHeaderMoreButton(UIView *header) {
             rightmostX = CGRectGetMaxX(frame);
         }
     }
-    return namedButton ?: rightmostButton;
+    // A Threads logo or our own badge is not a post menu.
+    (void)rightmostButton;
+    return namedButton;
 }
 
 static void TSBProcessHeaderCell(UIView *self) {
@@ -423,11 +426,23 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     }
     [owners addObject:spoilerView];
     CGRect anchorFrame = [timestamp convertRect:timestamp.bounds toView:header];
-    CGSize size = badge.bounds.size;
-    // Keep the badge in the header action zone without covering the menu.
-    CGFloat x = MAX(8.0, CGRectGetMinX(anchorFrame) - 8.0 - size.width);
+    CGSize size = CGSizeMake(MAX(44.0, ceil(badge.bounds.size.width)), 32.0);
+    UIView *metadata = TSBHeaderMetadataTextView(header);
+    // Detail headers may have no local menu. Reserve a trailing slot rather
+    // than treating the title or the Threads logo as a menu anchor.
+    BOOL hasMenu = timestamp != metadata;
+    CGFloat trailing = hasMenu ? CGRectGetMinX(anchorFrame) - 8.0 : CGRectGetWidth(header.bounds) - 56.0;
+    CGFloat x = MAX(8.0, trailing - size.width);
     CGFloat y = round(CGRectGetMidY(anchorFrame) - size.height / 2.0);
     CGRect targetFrame = CGRectMake(x, y, MAX(44.0, ceil(size.width)), MAX(32.0, ceil(size.height)));
+    if (metadata && metadata.superview) {
+        CGRect titleFrame = [metadata convertRect:metadata.bounds toView:header];
+        if (CGRectIntersectsRect(CGRectInset(targetFrame, -8.0, 0), titleFrame)) {
+            titleFrame.size.width = MAX(0.0, x - 8.0 - CGRectGetMinX(titleFrame));
+            metadata.frame = [header convertRect:titleFrame toView:metadata.superview];
+            metadata.clipsToBounds = YES;
+        }
+    }
     if (!CGRectEqualToRect(badge.frame, targetFrame)) {
         badge.frame = targetFrame;
     }
