@@ -2,7 +2,6 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <substrate.h>
-#import "TSBAdaptiveRows.h"
 
 static NSString * const TSBEnabledKey = @"TSBEnabled";
 static NSString * const TSBForceHideContainerKey = @"TSBForceHideContainer";
@@ -332,19 +331,6 @@ static void TSBProcessHeaderCell(UIView *self) {
 
 static void TSBHookedHeaderLayoutSubviews(UIView *self, SEL _cmd) {
     TSBOriginalHeaderLayoutSubviews(self, _cmd);
-    // Keep native header content in its original height. The appended row
-    // belongs to our direct child badge, not to avatar/title centering.
-    UICollectionViewCell *cell = (UICollectionViewCell *)self;
-    CGFloat nativeHeight = TSBHeaderNativeHeight(cell);
-    if (cell.bounds.size.height > nativeHeight + 1.0) {
-        CGRect frame = cell.contentView.frame;
-        if (frame.size.height != nativeHeight) {
-            frame.size.height = nativeHeight;
-            cell.contentView.frame = frame;
-            [cell.contentView setNeedsLayout];
-            [cell.contentView layoutIfNeeded];
-        }
-    }
     TSBProcessHeaderCell(self);
 }
 
@@ -405,7 +391,6 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
     NSHashTable *owners = header ? objc_getAssociatedObject(header, &TSBBadgeOwnerKey) : nil;
     if ([owners containsObject:spoilerView]) [owners removeObject:spoilerView];
     if (header != nil && owners.count == 0) {
-        TSBSetHeaderRow(header, NO);
         UIView *badge = objc_getAssociatedObject(header, &TSBBadgeKey);
         [badge removeFromSuperview];
         objc_setAssociatedObject(header, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -453,7 +438,6 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     UICollectionViewCell *header = TSBHeaderCellContainingView(timestamp);
     TSBSpoilerBadgeButton *badge = header ? objc_getAssociatedObject(header, &TSBBadgeKey) : nil;
     if (!TSBShowBadge() || header == nil || timestamp == nil) {
-        if (header) TSBSetHeaderRow(header, NO);
         [badge removeFromSuperview];
         return;
     }
@@ -527,10 +511,7 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     // Keep the complete touch target inside its owning cell. Moving outside
     // this rectangle could cover a sibling text/media cell, even if the header
     // itself has no obstacle at that position.
-    CGFloat nativeHeight = TSBHeaderNativeHeight(header);
-    CGRect nativeBounds = header.bounds;
-    nativeBounds.size.height = nativeHeight;
-    CGRect available = CGRectInset(nativeBounds, 4.0, 2.0);
+    CGRect available = CGRectInset(header.bounds, 4.0, 2.0);
     NSMutableArray<NSValue *> *candidates = [NSMutableArray arrayWithObject:[NSValue valueWithCGRect:targetFrame]];
     // Prefer below the requested anchor, then other free gaps in this header.
     NSMutableArray<NSNumber *> *rows = [NSMutableArray arrayWithObjects:@(y), @(CGRectGetMinY(available)), nil];
@@ -539,6 +520,7 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     for (NSValue *value in obstacles) {
         CGRect frame = value.CGRectValue;
         [rows addObject:@(CGRectGetMaxY(frame) + 4.0)];
+        [rows addObject:@(CGRectGetMinY(frame) - size.height - 4.0)];
         [columns addObject:@(CGRectGetMaxX(frame) + 8.0)];
         [columns addObject:@(CGRectGetMinX(frame) - size.width - 8.0)];
     }
@@ -567,11 +549,10 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         }
     }
     if (!found) {
-        TSBSetHeaderRow(header, YES);
-        targetFrame = CGRectMake(MAX(4.0, CGRectGetWidth(header.bounds) - size.width - 8.0),
-                                 nativeHeight + 4.0, size.width, size.height);
-    } else {
-        TSBSetHeaderRow(header, NO);
+        // Preserve native geometry if there is no safe full-size slot.
+        // Re-evaluate when header content or available width changes.
+        badge.hidden = YES;
+        return;
     }
     if (!CGRectEqualToRect(badge.frame, targetFrame)) {
         badge.frame = targetFrame;
