@@ -748,6 +748,19 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     NSString *key = toggle.tag == 0 ? TSBEnabledKey : (toggle.tag == 1 ? TSBForceHideContainerKey : TSBShowBadgeKey);
     [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:key];
     [NSUserDefaults.standardUserDefaults synchronize];
+    if (toggle.tag == 1 && !toggle.on) {
+        // "Force hide" may have hidden an existing container through the
+        // original UIKit setter.  Changing the preference alone does not
+        // cause Threads to lay those cells out again, so restore each tracked
+        // container immediately and let the safe alpha-based bypass apply.
+        for (UIView *spoiler in TSBTrackedSpoilerViews.allObjects) {
+            [TSBPendingSpoilerViews removeObject:spoiler];
+            objc_setAssociatedObject(spoiler, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            TSBOriginalSetHidden(spoiler, @selector(setHidden:), NO);
+            TSBApplySpoilerPresentation(spoiler);
+            TSBRevealCarouselSpoilersIfNeeded(spoiler);
+        }
+    }
     if (!TSBEnabled() || !TSBShowBadge()) {
         for (UIView *spoiler in TSBTrackedSpoilerViews.allObjects) TSBClearSpoilerBadge(spoiler);
     }
