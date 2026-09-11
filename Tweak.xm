@@ -226,7 +226,7 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     }
     UICollectionViewCell *source = TSBOuterFeedCell(spoilerView);
     UICollectionViewCell *footer = source ? TSBFooterForFeedCell(source) : nil;
-    UIView *share = footer && TSBIsInVisibleViewport(footer) ? TSBFooterShareButton(footer) : nil;
+    UIView *share = footer ? TSBFooterShareButton(footer) : nil;
     if (objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != share)
         TSBClearSpoilerBadge(spoilerView);
     NSString *status = !source ? @"no source feed cell" : !footer ? @"waiting for this post's footer" :

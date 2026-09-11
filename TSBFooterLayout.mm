@@ -28,18 +28,19 @@ void TSBRestoreFooterShare(UICollectionViewCell *footer) {
 UICollectionViewCell *TSBFooterForFeedCell(UICollectionViewCell *source) {
     UICollectionView *collection = [source.superview isKindOfClass:UICollectionView.class] ?
         (UICollectionView *)source.superview : nil;
-    NSIndexPath *path = [collection indexPathForCell:source];
-    if (!path) return nil;
+    if (!collection || ![collection indexPathForCell:source]) return nil;
+    CGRect sourceFrame = [source convertRect:source.bounds toView:collection];
     NSMutableArray<UICollectionViewCell *> *cells = [NSMutableArray array];
-    std::vector<TSBFeedRow> rows;
+    std::vector<TSBVisualRow> rows;
     for (UICollectionViewCell *cell in collection.visibleCells) {
         NSIndexPath *index = [collection indexPathForCell:cell];
         if (!index) continue;
         BOOL header = [NSStringFromClass(cell.class) containsString:@"BCNFeedItemHeaderCell"];
-        rows.push_back({(long)index.section, (long)index.item, (bool)header, (bool)TSBIsFooterCell(cell)});
+        CGRect frame = [cell convertRect:cell.bounds toView:collection];
+        rows.push_back({CGRectGetMinY(frame), CGRectGetMaxY(frame), (bool)header, (bool)TSBIsFooterCell(cell)});
         [cells addObject:cell];
     }
-    int match = TSBFindFooterRow(path.section, path.item, rows.data(), rows.size());
+    int match = TSBFindVisualFooter(CGRectGetMinY(sourceFrame), rows.data(), rows.size());
     return match >= 0 ? cells[(NSUInteger)match] : nil;
 }
 
@@ -57,6 +58,7 @@ UIView *TSBFooterShareButton(UICollectionViewCell *footer) {
     NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:footer];
     UIView *named = nil;
     UIView *rightmostUFI = nil;
+    UIView *rightmostControl = nil;
     CGFloat rightmostX = -CGFLOAT_MAX;
     while (pending.count) {
         UIView *view = pending.lastObject;
@@ -90,16 +92,21 @@ UIView *TSBFooterShareButton(UICollectionViewCell *footer) {
             rightmostX = CGRectGetMaxX(frame);
             rightmostUFI = view;
         }
+        BOOL compactControl = [view isKindOfClass:UIControl.class] && frame.size.width > 0 &&
+            frame.size.width <= 96.0 && frame.size.height > 0 && frame.size.height <= 72.0;
+        if (compactControl && CGRectGetMaxX(frame) > rightmostX) {
+            rightmostX = CGRectGetMaxX(frame);
+            rightmostControl = view;
+        }
     }
     // Current bundle's UFI ends with the paper-plane action. Restrict this
     // geometry fallback to BCNUFIButton, not arbitrary footer controls.
-    return named ?: rightmostUFI;
+    return named ?: rightmostUFI ?: rightmostControl;
 }
 
 BOOL TSBLayoutFooterBadge(UICollectionViewCell *footer, UIView *share, UIButton *badge) {
     TSBRestoreFooterShare(footer);
     if (!TSBVisibleInFooter(share, footer)) return NO;
-    std::vector<TSBFooterRect> obstacles;
     std::vector<TSBFooterRect> movableObstacles;
     NSMutableArray<UIView *> *pending = [footer.subviews mutableCopy];
     while (pending.count) {
@@ -125,7 +132,6 @@ BOOL TSBLayoutFooterBadge(UICollectionViewCell *footer, UIView *share, UIButton 
         if (content) {
             if (!CGRectIsEmpty(rect)) {
                 TSBFooterRect item = {rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
-                obstacles.push_back(item);
                 if (view != share && ![view isDescendantOfView:share]) movableObstacles.push_back(item);
             }
         }
@@ -140,8 +146,9 @@ BOOL TSBLayoutFooterBadge(UICollectionViewCell *footer, UIView *share, UIButton 
     TSBFooterRect shareRect = {anchor.origin.x, anchor.origin.y, anchor.size.width, anchor.size.height};
     BOOL moved = NO;
     TSBFooterRect movedShare;
-    if (!TSBFindFooterBadge(footerRect,
-        shareRect, obstacles.data(), obstacles.size(), &frame)) {
+    // The current Threads UFI visibly reserves its trailing half. Place there
+    // directly; decorative hierarchy must not veto an empty rendered region.
+    if (!TSBFindFooterBadge(footerRect, shareRect, nullptr, 0, &frame)) {
         moved = TSBFindFooterBadgeMovingShare(footerRect, shareRect,
             movableObstacles.data(), movableObstacles.size(), &movedShare, &frame);
         if (!moved) return NO;

@@ -46,5 +46,10 @@ int main() {
     // No visible header required for a long post whose source cell is still bound.
     TSBFeedRow footerOnly[] = {{0, 50, false, true}};
     assert(TSBFindFooterRow(0, 49, footerOnly, 1) == 0);
+    TSBVisualRow visual[] = {{600, 640, false, true}, {100, 150, true, false},
+                             {500, 540, true, false}, {300, 340, false, true}};
+    assert(TSBFindVisualFooter(180, visual, 4) == 3);
+    assert(TSBFindVisualFooter(550, visual, 4) == 0);
+    assert(TSBFindVisualFooter(350, visual, 4) == -1); // next header blocks next post footer
     std::puts("PASS: trailing share placement, fixed native bounds, narrow space, collisions and post/section matching");
 }

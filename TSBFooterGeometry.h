@@ -4,6 +4,7 @@
 
 struct TSBFooterRect { double x, y, width, height; };
 struct TSBFeedRow { long section, item; bool header, footer; };
+struct TSBVisualRow { double minY, maxY; bool header, footer; };
 
 // Match within one section and stop at the next post header. Visible rows may
 // arrive in any order, and the original post header may have scrolled away.
@@ -12,6 +13,15 @@ static inline int TSBFindFooterRow(long section, long item, const TSBFeedRow *ro
     for (size_t i = 0; i < count; ++i) {
         if (rows[i].section != section || rows[i].item < item || (!rows[i].header && !rows[i].footer)) continue;
         if (first < 0 || rows[i].item < rows[first].item) first = (int)i;
+    }
+    return first >= 0 && rows[first].footer ? first : -1;
+}
+
+static inline int TSBFindVisualFooter(double sourceMinY, const TSBVisualRow *rows, size_t count) {
+    int first = -1;
+    for (size_t i = 0; i < count; ++i) {
+        if (rows[i].maxY < sourceMinY || (!rows[i].header && !rows[i].footer)) continue;
+        if (first < 0 || rows[i].minY < rows[first].minY) first = (int)i;
     }
     return first >= 0 && rows[first].footer ? first : -1;
 }
