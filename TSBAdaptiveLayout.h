@@ -1,6 +1,6 @@
 #import <UIKit/UIKit.h>
 
-// Reserves a real gap after the native header; the badge belongs to that gap.
-BOOL TSBReserveBadgeRow(UICollectionView *collection, NSIndexPath *headerPath,
-                        UIButton *badge, CGFloat anchorX, CGSize desiredSize, CGFloat headerOverflow);
-void TSBResetBadgeRows(UICollectionView *collection);
+BOOL TSBLayoutBadgeInHeader(UICollectionViewCell *header, UIView *metadata, UIView *menu, UIButton *badge);
+void TSBRestoreHeaderLayout(UIView *header);
+void TSBResetAllHeaderLayouts(void);
+UIView *TSBHitTestHeaderMenu(UIView *header, CGPoint point, UIView *source, UIEvent *event);

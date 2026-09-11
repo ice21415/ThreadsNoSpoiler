@@ -14,38 +14,37 @@ that identifiers or symbols exist; they are not an on-device view hierarchy dump
 | Header container | `BCNFeedItemHeaderCell`, `BCNFeedItemHeaderCellContentView`, `BCNFeedItemHeaderLayout` | Container/layout symbols |
 | Feed layout | `_TtC21BCNFeedCollectionView27BCNFeedCollectionViewLayout` | Swift runtime class symbol |
 
-## Implemented behavior
+## Implemented behavior (0.1.42)
 
-- Preserve the complete native header and its native text wrapping, including
-  unknown inline glyphs and controls. Do not shrink or replace the author's ID.
-- Measure visible header descendants as a group; account for content extending
-  below the cell bounds. The diagnostic hierarchy now includes accessibility IDs.
-- Reserve an independent action row after the header. Shift subsequent native
-  layout attributes and grow content size by the reserved height. Copy attributes
-  instead of mutating native cached objects. Spanning decoration frames grow too.
-- Center the badge under the menu, clamped to the safe horizontal range. If a
-  menu is absent, align to the trailing edge of the header.
-- Measure the badge title using Dynamic Type, allow wrapping, retain at least a
-  44-point height and normal-width touch target. Increase row height for large text.
-- Remove the minimum-overlap fallback entirely. Content crowding no longer
-  selects a colliding badge rectangle or shrinks the badge to a 1-point height.
-- Keep row spacing stable when a header scrolls out of view. Reset index-path
-  reservations on collection reload/batch updates and when the feature is disabled.
-- Keep press/release preview ownership on the header, independent of the badge's
-  collection-view host. Cancel an active preview when resetting rows.
+- Preserve the native header height and all following post positions. No hooks
+  on collection layout attributes, content size, reloads or batch updates remain.
+- Search for a non-overlapping badge slot below the menu inside the header.
+- When it is crowded, proportionally scale the native header group into the left
+  portion of the same rectangle. ID, date, topic, edit and count attachments stay
+  in their existing relative arrangement. Native text is scaled as rendered,
+  rather than edited or reflowed into additional lines.
+- Position the native menu and badge in a right-hand lane inside the existing
+  header. The menu stays above the badge. No minimum-overlap fallback is used.
+- Keep the menu in its native hierarchy and route compact-menu touches through
+  its actual bounds. Temporarily release ancestor clipping only where needed,
+  restoring it with the other native properties.
+- Restore centers, transforms and clipping before native header layout, when a
+  header leaves the window, when its badge is cleared, and when disabled. Repeat
+  layout always starts from the restored native geometry.
+- Badge text stays on one line and adapts to the available width. Short headers
+  require smaller text and touch targets; a 44-point minimum target cannot be
+  promised together with two stacked controls inside a 44-point header.
+- Unknown collection-layout subclasses are no longer a reason to remove the
+  badge: placement is local to the detected header and does not hook its layout.
 
 ## Verification and limits
 
-`scripts/test-layout.sh` exercises the same portable geometry used in the tweak:
-all listed header elements, narrow widths, large fonts, overflowing header content,
-multiple posts, spanning decorations, fractional boundaries, viewport queries and
-reset. The iOS package is also compiled for arm64 and arm64e.
+`scripts/test-layout.sh` exercises the same fixed-header geometry used by the
+tweak, including narrow widths, short/tall headers, all requested content kinds,
+native overflow, menu presence/absence, component separation, constant header
+dimensions, aspect ratios and repeated calculations. Both iOS slices compile.
 
-No device was attached for this change. Native layout cache behavior, batch update
-animations, rotation, scrolling/reuse and press/release behavior still require
-on-device verification. The existing arm64e ABI compiler warning remains.
-
-Only the bundled `BCNFeedCollectionView.BCNFeedCollectionViewLayout` is hooked.
-An unknown runtime layout records an unsupported-layout status and does not use
-an overlapping fallback. Consequently this is not a verified guarantee that the
-badge remains visible on every Threads version or screen.
+No device was attached for this change. Native transforms, menu hit testing,
+cell reuse and visual readability still require on-device verification. The
+existing arm64e ABI compiler warning remains. Static bundle symbols alone do not
+establish the exact runtime view for the edited/count glyphs.

@@ -33,10 +33,11 @@ static UIView *TSBHookedCollectionHitTest(UICollectionView *self, SEL selector, 
     UIView *original = TSBOriginalCollectionHitTest(self, selector, point, event);
     if (!original || ![NSStringFromClass(self.class) containsString:@"BCNFeedCollectionView"] ||
         !CGRectContainsPoint(self.bounds, point)) return original;
-    // The badge can sit below its header cell after a long topic wraps.
-    // Route only its actual bounds at the collection level; a header-only
-    // hit-test cannot catch a touch assigned to the following media cell.
+    // Route compact menu hits through its retained native ancestry. Its parent
+    // may be narrower after compaction; both controls stay inside this header.
     for (UICollectionViewCell *cell in self.visibleCells) {
+        UIView *menuHit = TSBHitTestHeaderMenu(cell, point, self, event);
+        if (menuHit) return menuHit;
         UIButton *badge = objc_getAssociatedObject(cell, &TSBBadgeKey);
         if (!badge || badge.hidden || badge.alpha < 0.01 || !badge.enabled ||
             !badge.userInteractionEnabled || badge.window != self.window ||
@@ -311,6 +312,7 @@ static void TSBProcessHeaderCell(UIView *self) {
 }
 
 static void TSBHookedHeaderLayoutSubviews(UIView *self, SEL _cmd) {
+    TSBRestoreHeaderLayout(self);
     TSBOriginalHeaderLayoutSubviews(self, _cmd);
     TSBProcessHeaderCell(self);
 }
@@ -319,6 +321,7 @@ static void TSBHookedCollectionCellDidMoveToWindow(UICollectionViewCell *self, S
     TSBOriginalCollectionCellDidMoveToWindow(self, _cmd);
     if ([NSStringFromClass(self.class) isEqualToString:@"BCNFeedItemHeaderCell.BCNFeedItemHeaderCell"]) {
         if (self.window == nil) {
+            TSBRestoreHeaderLayout(self);
             UIView *badge = objc_getAssociatedObject(self, &TSBBadgeKey);
             [badge removeFromSuperview];
             objc_setAssociatedObject(self, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -372,6 +375,7 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
     NSHashTable *owners = header ? objc_getAssociatedObject(header, &TSBBadgeOwnerKey) : nil;
     if ([owners containsObject:spoilerView]) [owners removeObject:spoilerView];
     if (header != nil && owners.count == 0) {
+        TSBRestoreHeaderLayout(header);
         UIView *badge = objc_getAssociatedObject(header, &TSBBadgeKey);
         [badge removeFromSuperview];
         objc_setAssociatedObject(header, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -388,7 +392,7 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
 
 @implementation TSBSpoilerBadgeButton
 - (CGRect)titleRectForContentRect:(CGRect)contentRect {
-    return CGRectInset(contentRect, 8.0, 4.0);
+    return CGRectInset(contentRect, 3.0, 2.0);
 }
 - (void)tsb_setOriginalPreviewVisible:(BOOL)showingOriginal {
     NSHashTable<UIView *> *owners = objc_getAssociatedObject(self.owningHeader, &TSBBadgeOwnerKey);
@@ -423,6 +427,7 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     UICollectionViewCell *header = TSBHeaderCellContainingView(timestamp);
     TSBSpoilerBadgeButton *badge = header ? objc_getAssociatedObject(header, &TSBBadgeKey) : nil;
     if (!TSBShowBadge() || !header || !timestamp) {
+        TSBRestoreHeaderLayout(header);
         [badge removeFromSuperview];
         return;
     }
@@ -441,10 +446,10 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
         badge.accessibilityLabel = @"劇透貼文";
         badge.accessibilityHint = @"按住可查看原始防劇透遮罩";
-        badge.titleLabel.numberOfLines = 0;
-        badge.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
+        badge.titleLabel.numberOfLines = 1;
+        badge.titleLabel.lineBreakMode = NSLineBreakByClipping;
         badge.titleLabel.textAlignment = NSTextAlignmentCenter;
-        badge.titleLabel.adjustsFontForContentSizeCategory = YES;
+        badge.titleLabel.adjustsFontForContentSizeCategory = NO;
         [badge addTarget:badge action:@selector(tsb_beginOriginalPreview:)
           forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
         [badge addTarget:badge action:@selector(tsb_endOriginalPreview:)
@@ -460,42 +465,12 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     }
     [owners addObject:spoilerView];
     objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // Reserve space for the complete native header: author, date, topic, edit,
-    // thread-count attachments, menu and unknown future content all stay intact.
-    // Native text keeps its own wrapping; only our label is measured here.
-    badge.titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleCaption1]
-        scaledFontForFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold]
-        compatibleWithTraitCollection:header.traitCollection];
-    CGFloat availableWidth = MAX(1.0, MIN(CGRectGetWidth(header.bounds),
-        CGRectGetWidth(collection.bounds) - collection.safeAreaInsets.left -
-        collection.safeAreaInsets.right) - 16.0);
-    CGSize textSize = [badge.titleLabel sizeThatFits:CGSizeMake(MAX(1.0, availableWidth - 16.0), CGFLOAT_MAX)];
-    CGSize size = CGSizeMake(MIN(availableWidth, MAX(44.0, ceil(textSize.width) + 16.0)),
-                             MAX(44.0, ceil(textSize.height) + 8.0));
     UIView *metadata = TSBHeaderMetadataTextView(header);
-    CGRect anchor = [timestamp convertRect:timestamp.bounds toView:collection];
-    CGFloat centerX = timestamp != metadata ? CGRectGetMidX(anchor) :
-        CGRectGetMaxX([header convertRect:header.bounds toView:collection]) - size.width / 2.0 - 8.0;
-    if (badge.superview != collection) [collection addSubview:badge];
-    CGFloat contentBottom = CGRectGetMaxY(header.bounds);
-    NSMutableArray<UIView *> *pending = [header.subviews mutableCopy];
-    while (pending.count) {
-        UIView *view = pending.lastObject;
-        [pending removeLastObject];
-        if (view.hidden || view.alpha < 0.01 || view == badge) continue;
-        CGRect frame = [view convertRect:view.bounds toView:header];
-        if (!CGRectIsEmpty(frame)) contentBottom = MAX(contentBottom, CGRectGetMaxY(frame));
-        if (!view.clipsToBounds) [pending addObjectsFromArray:view.subviews];
-    }
-    CGFloat overflow = MAX(0.0, contentBottom - CGRectGetMaxY(header.bounds));
-    BOOL reserved = TSBReserveBadgeRow(collection, path, badge, centerX, size, overflow);
-    NSString *status = reserved ? @"dedicated row; native header and following content separated" :
-        [NSString stringWithFormat:@"unsupported feed layout: %@", NSStringFromClass(collection.collectionViewLayout.class)];
+    UIView *menu = timestamp != metadata ? timestamp : nil;
+    BOOL placed = TSBLayoutBadgeInHeader(header, metadata, menu, badge);
+    NSString *status = placed ? @"fixed native header height; adaptive in-header layout" :
+        @"waiting for native header geometry";
     objc_setAssociatedObject(spoilerView, &TSBBadgeStatusKey, status, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    if (!reserved) {
-        // Do not revive the old overlapping placement on an unknown layout.
-        [badge removeFromSuperview];
-    }
 }
 
 static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
@@ -720,12 +695,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:key];
     [NSUserDefaults.standardUserDefaults synchronize];
     if (!TSBEnabled() || !TSBShowBadge()) {
-        NSMutableSet *collections = [NSMutableSet set];
-        for (UIView *spoiler in TSBTrackedSpoilerViews.allObjects) {
-            UICollectionViewCell *cell = TSBOuterFeedCell(spoiler);
-            if ([cell.superview isKindOfClass:UICollectionView.class]) [collections addObject:cell.superview];
-        }
-        for (UICollectionView *collection in collections) TSBResetBadgeRows(collection);
+        TSBResetAllHeaderLayouts();
     }
 }
 
