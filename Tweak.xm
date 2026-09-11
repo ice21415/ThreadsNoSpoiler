@@ -76,6 +76,7 @@ static void TSBApplySpoilerPresentation(UIView *view) {
     if (!TSBOriginalSetAlpha) return;
     NSNumber *requested = objc_getAssociatedObject(view, &TSBRequestedAlphaKey);
     BOOL preview = [objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue];
+    if (!preview && ![objc_getAssociatedObject(view, &TSBActiveSpoilerKey) boolValue]) return;
     CGFloat alpha = preview ? 1.0 : TSBEnabled() ? 0.0 : requested ? requested.doubleValue : 1.0;
     TSBOriginalSetAlpha(view, @selector(setAlpha:), alpha);
 }
@@ -257,7 +258,21 @@ static BOOL TSBCellContainsSpoiler(UIView *view) {
             if (found) return body;
         }
     }
+    if ([NSStringFromClass(cell.class) containsString:@"FeedTextCell"])
+        return YES;
     return NO;
+}
+
+static BOOL TSBProcessSpoilerOwner(UIView *spoilerView) {
+    if (!TSBCellContainsSpoiler(spoilerView)) {
+        objc_setAssociatedObject(spoilerView, &TSBActiveSpoilerKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        TSBClearSpoilerBadge(spoilerView);
+        return NO;
+    }
+    objc_setAssociatedObject(spoilerView, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    TSBApplySpoilerPresentation(spoilerView);
+    TSBUpdateSpoilerBadge(spoilerView);
+    return YES;
 }
 
 static void TSBClearFooterCell(UICollectionViewCell *cell) {
@@ -503,7 +518,7 @@ static void TSBRevealCarouselSpoilersIfNeeded(UIView *spoilerView) {
         [pending removeLastObject];
         if ((view == spoilerView || TSBIsSpoilerContainer(view)) &&
             ![objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue]) {
-            TSBApplySpoilerPresentation(view);
+            TSBProcessSpoilerOwner(view);
         }
         [pending addObjectsFromArray:view.subviews];
     }
