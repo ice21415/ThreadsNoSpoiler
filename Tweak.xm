@@ -35,9 +35,11 @@ static char TSBRequestedAlphaKey;
 static char TSBNativeMaskSeenKey;
 static char TSBMaskRequestedAlphaKey;
 static char TSBPostIdentifierKey;
+static char TSBDebugButtonKey;
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *share);
 static void TSBClearSpoilerBadge(UIView *spoilerView);
+static NSString *TSBPostDebugReportForOwner(UIView *owner);
 
 static BOOL TSBIsInVisibleViewport(UIView *view) {
     UIWindow *window = view.window;
@@ -442,6 +444,7 @@ static void TSBClearFooterCell(UICollectionViewCell *cell) {
     TSBRestoreFooterShare(cell);
     NSHashTable *owners = objc_getAssociatedObject(cell, &TSBBadgeOwnerKey);
     UIButton *badge = objc_getAssociatedObject(cell, &TSBBadgeKey);
+    UIButton *debugButton = objc_getAssociatedObject(cell, &TSBDebugButtonKey);
     if (badge) TSBLog(@"clear footer=%p class=%@ window=%d owners=%lu", cell,
         NSStringFromClass(cell.class), cell.window != nil, (unsigned long)owners.count);
     [badge sendActionsForControlEvents:UIControlEventTouchCancel];
@@ -451,7 +454,9 @@ static void TSBClearFooterCell(UICollectionViewCell *cell) {
             objc_setAssociatedObject(owner, &TSBBadgeAnchorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     [badge removeFromSuperview];
+    [debugButton removeFromSuperview];
     objc_setAssociatedObject(cell, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, &TSBDebugButtonKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, &TSBBadgeOwnerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -584,6 +589,22 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
 }
 @end
 
+@interface TSBPostDebugButton : UIButton
+@property (nonatomic, weak) UIView *spoilerOwner;
+@end
+
+@implementation TSBPostDebugButton
+- (void)tsb_copyPostDebug:(id)sender {
+    NSString *report = TSBPostDebugReportForOwner(self.spoilerOwner);
+    UIPasteboard.generalPasteboard.string = report;
+    [self setTitle:@"Copied" forState:UIControlStateNormal];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self setTitle:@"Copy" forState:UIControlStateNormal];
+    });
+}
+@end
+
 // One badge per footer, with only that post's spoiler views as preview owners.
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *share) {
     UICollectionViewCell *footer = TSBOuterFeedCell(share);
@@ -621,7 +642,32 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *share) {
     objc_setAssociatedObject(spoilerView, &TSBBadgeStatusKey,
         placed ? @"footer trailing edge, right of share" : @"waiting for footer trailing space",
         OBJC_ASSOCIATION_COPY_NONATOMIC);
-    if (!placed) [badge removeFromSuperview];
+    TSBPostDebugButton *debugButton = objc_getAssociatedObject(footer, &TSBDebugButtonKey);
+    if (!debugButton) {
+        debugButton = [TSBPostDebugButton buttonWithType:UIButtonTypeCustom];
+        [debugButton setTitle:@"Copy" forState:UIControlStateNormal];
+        [debugButton setTitleColor:UIColor.systemOrangeColor forState:UIControlStateNormal];
+        debugButton.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.12];
+        debugButton.layer.cornerRadius = 6.0;
+        debugButton.titleLabel.font = [UIFont systemFontOfSize:10 weight:UIFontWeightSemibold];
+        debugButton.accessibilityIdentifier = @"ThreadsNoSpoilerPostDebugButton";
+        [debugButton addTarget:debugButton action:@selector(tsb_copyPostDebug:)
+              forControlEvents:UIControlEventTouchUpInside];
+        objc_setAssociatedObject(footer, &TSBDebugButtonKey, debugButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    debugButton.spoilerOwner = spoilerView;
+    if (placed) {
+        if (debugButton.superview != footer) [footer addSubview:debugButton];
+        CGRect debugFrame = badge.frame;
+        debugFrame.size.width = 42.0;
+        debugFrame.origin.x = CGRectGetMinX(badge.frame) - debugFrame.size.width - 4.0;
+        if (debugFrame.origin.x < 4.0) debugFrame.origin.x = 4.0;
+        debugButton.frame = debugFrame;
+        [footer bringSubviewToFront:debugButton];
+    } else {
+        [badge removeFromSuperview];
+        [debugButton removeFromSuperview];
+    }
 }
 
 static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
@@ -816,12 +862,13 @@ static NSString *TSBSpoilerSemanticReport(UIView *view) {
     return parts.count ? [parts componentsJoinedByString:@" "] : @"(not exposed)";
 }
 
-static NSString *TSBPostDebugReport(void) {
+static NSString *TSBPostDebugReportForOwner(UIView *target) {
     NSMutableString *report = [NSMutableString stringWithFormat:
         @"ThreadsNoSpoiler post debug\nApp: %@\n",
         [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?"];
     NSUInteger count = 0;
     for (UIView *owner in TSBTrackedSpoilerViews.allObjects) {
+        if (target && owner != target) continue;
         if (![objc_getAssociatedObject(owner, &TSBActiveSpoilerKey) boolValue] || owner.window == nil) continue;
         count++;
         UICollectionViewCell *source = TSBOuterFeedCell(owner);
@@ -879,12 +926,6 @@ static NSString *TSBPostDebugReport(void) {
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithTitle:@"匯出診斷" style:UIBarButtonItemStylePlain
         target:self action:@selector(tsb_exportDiagnostics:)];
-    UIBarButtonItem *postDebugItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"Copy Post Debug" style:UIBarButtonItemStylePlain
-        target:self action:@selector(tsb_copyPostDebug:)];
-    NSMutableArray<UIBarButtonItem *> *rightItems = [self.navigationItem.rightBarButtonItems mutableCopy] ?: [NSMutableArray array];
-    [rightItems addObject:postDebugItem];
-    self.navigationItem.rightBarButtonItems = rightItems;
 }
 
 - (void)tsb_exportDiagnostics:(id)sender {
@@ -898,16 +939,6 @@ static NSString *TSBPostDebugReport(void) {
         initWithActivityItems:@[report] applicationActivities:nil];
     share.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
     [self presentViewController:share animated:YES completion:nil];
-}
-
-- (void)tsb_copyPostDebug:(id)sender {
-    NSString *report = TSBPostDebugReport();
-    UIPasteboard.generalPasteboard.string = report;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Post debug copied"
-        message:@"The visible spoiler owner states were copied to the clipboard."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
