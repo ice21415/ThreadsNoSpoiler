@@ -796,6 +796,70 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     });
 }
 
+static NSString *TSBSpoilerSemanticReport(UIView *view) {
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSString *getter in @[@"isSpoilerMaskVisible", @"hasSpoilerContent", @"isSpoilerMedia"]) {
+        BOOL available = NO;
+        BOOL value = TSBBooleanGetter(view, getter, &available);
+        if (available) [parts addObject:[NSString stringWithFormat:@"%@=%@", getter, value ? @"YES" : @"NO"]];
+    }
+    for (NSString *getter in @[@"spoilerBoxes", @"spoilerRevealHandler"]) {
+        id value = TSBObjectGetter(view, getter);
+        if (!value) {
+            [parts addObject:[NSString stringWithFormat:@"%@=(nil)", getter]];
+        } else if ([value respondsToSelector:@selector(count)]) {
+            [parts addObject:[NSString stringWithFormat:@"%@.count=%lu", getter, (unsigned long)[value count]]];
+        } else {
+            [parts addObject:[NSString stringWithFormat:@"%@=%@", getter, NSStringFromClass([value class])]];
+        }
+    }
+    return parts.count ? [parts componentsJoinedByString:@" "] : @"(not exposed)";
+}
+
+static NSString *TSBPostDebugReport(void) {
+    NSMutableString *report = [NSMutableString stringWithFormat:
+        @"ThreadsNoSpoiler post debug\nApp: %@\n",
+        [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?"];
+    NSUInteger count = 0;
+    for (UIView *owner in TSBTrackedSpoilerViews.allObjects) {
+        if (![objc_getAssociatedObject(owner, &TSBActiveSpoilerKey) boolValue] || owner.window == nil) continue;
+        count++;
+        UICollectionViewCell *source = TSBOuterFeedCell(owner);
+        NSString *postID = nil;
+        UICollectionViewCell *footer = TSBResolvedFooterForSource(source, &postID);
+        NSIndexPath *indexPath = [source.superview isKindOfClass:UICollectionView.class] ?
+            [((UICollectionView *)source.superview) indexPathForCell:source] : nil;
+        [report appendFormat:@"\nPOST[%lu] owner=%p %@ active=%d nativeMask=%d hidden=%d alpha=%.3f\n",
+            (unsigned long)count, owner, NSStringFromClass(owner.class),
+            [objc_getAssociatedObject(owner, &TSBActiveSpoilerKey) boolValue],
+            TSBHasNativeMaskPresentation(owner), owner.hidden, owner.alpha];
+        [report appendFormat:@"source=%p %@ indexPath=%@ postId=%@\nfooter=%p %@ share=%p\n",
+            source, NSStringFromClass(source.class), indexPath ?: @"(none)",
+            postID.length ? postID : @"(unavailable)", footer,
+            footer ? NSStringFromClass(footer.class) : @"(none)",
+            footer ? TSBFooterShareButton(footer) : nil];
+        [report appendFormat:@"semantic %@\n", TSBSpoilerSemanticReport(owner)];
+        NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithArray:owner.subviews];
+        NSUInteger inspected = 0;
+        while (pending.count && inspected++ < 40) {
+            UIView *candidate = pending.lastObject;
+            [pending removeLastObject];
+            NSString *name = NSStringFromClass(candidate.class);
+            if ([candidate isKindOfClass:UIVisualEffectView.class] ||
+                [name containsString:@"Spoiler"] || [name containsString:@"Overlay"] ||
+                candidate.superview == owner) {
+                [report appendFormat:@"view %@ hidden=%d alpha=%.3f frame=(%.0f,%.0f,%.0f,%.0f) layers=%lu\n",
+                    name, candidate.hidden, candidate.alpha, candidate.frame.origin.x,
+                    candidate.frame.origin.y, candidate.frame.size.width, candidate.frame.size.height,
+                    (unsigned long)candidate.layer.sublayers.count];
+            }
+            [pending addObjectsFromArray:candidate.subviews];
+        }
+    }
+    if (!count) [report appendString:@"\n(no active visible spoiler owners)\n"];
+    return report;
+}
+
 @interface TSBPreferencesController : UITableViewController
 @end
 
@@ -815,6 +879,12 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithTitle:@"匯出診斷" style:UIBarButtonItemStylePlain
         target:self action:@selector(tsb_exportDiagnostics:)];
+    UIBarButtonItem *postDebugItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"Copy Post Debug" style:UIBarButtonItemStylePlain
+        target:self action:@selector(tsb_copyPostDebug:)];
+    NSMutableArray<UIBarButtonItem *> *rightItems = [self.navigationItem.rightBarButtonItems mutableCopy] ?: [NSMutableArray array];
+    [rightItems addObject:postDebugItem];
+    self.navigationItem.rightBarButtonItems = rightItems;
 }
 
 - (void)tsb_exportDiagnostics:(id)sender {
@@ -828,6 +898,16 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         initWithActivityItems:@[report] applicationActivities:nil];
     share.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
     [self presentViewController:share animated:YES completion:nil];
+}
+
+- (void)tsb_copyPostDebug:(id)sender {
+    NSString *report = TSBPostDebugReport();
+    UIPasteboard.generalPasteboard.string = report;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Post debug copied"
+        message:@"The visible spoiler owner states were copied to the clipboard."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }

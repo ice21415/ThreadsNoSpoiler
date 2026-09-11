@@ -1,6 +1,6 @@
 Package: com.example.threadsnospoiler
 Name: Threads No Spoiler
-Version: 0.1.70
+Version: 0.1.71
 Architecture: iphoneos-arm
 Description: Adds a local spoiler-display preference to Threads.
 Maintainer: Local
