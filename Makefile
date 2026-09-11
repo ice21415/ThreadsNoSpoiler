@@ -4,7 +4,7 @@ THEOS_PACKAGE_SCHEME = rootless
 INSTALL_TARGET_PROCESSES = Threads
 
 TWEAK_NAME = ThreadsNoSpoiler
-ThreadsNoSpoiler_FILES = Tweak.xm
+ThreadsNoSpoiler_FILES = Tweak.xm TSBAdaptiveLayout.mm
 ThreadsNoSpoiler_CFLAGS = -fobjc-arc
 ThreadsNoSpoiler_FRAMEWORKS = UIKit
 

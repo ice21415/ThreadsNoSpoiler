@@ -31,6 +31,14 @@ The repository script retains previous packages and regenerates the APT indexes 
 
 ## Scope
 
+The adaptive badge layout reserves a separate row after the native post header.
+See [the header component audit](docs/header-layout-audit.md) for bundle evidence,
+layout behavior, and outstanding device checks. Run its geometry tests with:
+
+```powershell
+wsl -d Ubuntu-Theos -- bash scripts/test-layout.sh
+```
+
 The Settings entry is a navigation-bar item rather than an inserted private Threads settings cell. That makes it substantially less coupled to Threads' internal table or collection-view implementation. It appears for English, Traditional Chinese, and Simplified Chinese Settings titles.
 
 ## Sileo repository
