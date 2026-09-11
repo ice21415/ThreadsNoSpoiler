@@ -32,6 +32,7 @@ static void (*TSBOriginalCollectionCellPrepareForReuse)(id, SEL);
 static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 static void (*TSBOriginalSetAlpha)(id, SEL, CGFloat);
 static char TSBRequestedAlphaKey;
+static char TSBNativeMaskSeenKey;
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *share);
 static void TSBClearSpoilerBadge(UIView *spoilerView);
@@ -77,12 +78,33 @@ static void TSBApplySpoilerPresentation(UIView *view) {
     NSNumber *requested = objc_getAssociatedObject(view, &TSBRequestedAlphaKey);
     BOOL preview = [objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue];
     if (!preview && ![objc_getAssociatedObject(view, &TSBActiveSpoilerKey) boolValue]) return;
-    CGFloat alpha = preview ? 1.0 : TSBEnabled() ? 0.0 : requested ? requested.doubleValue : 1.0;
+    CGFloat originalAlpha = requested ? requested.doubleValue : 1.0;
+    CGFloat alpha = preview ? originalAlpha : TSBEnabled() ? 0.0 : originalAlpha;
     TSBOriginalSetAlpha(view, @selector(setAlpha:), alpha);
+}
+
+static BOOL TSBHasNativeMaskPresentation(UIView *view) {
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:view];
+    while (pending.count) {
+        UIView *candidate = pending.lastObject;
+        [pending removeLastObject];
+        NSString *name = NSStringFromClass(candidate.class);
+        if ([candidate isKindOfClass:UIVisualEffectView.class] ||
+            [name containsString:@"SpoilerMask"] || [name containsString:@"VisualEffectBackdrop"]) return YES;
+        [pending addObjectsFromArray:candidate.subviews];
+    }
+    return NO;
 }
 
 static void TSBHookedSetAlpha(UIView *self, SEL _cmd, CGFloat alpha) {
     objc_setAssociatedObject(self, &TSBRequestedAlphaKey, @(alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // This is the final app-generated mask presentation result. Once seen,
+    // retain it through layout/reuse transitions until the source cell itself
+    // is explicitly reused.
+    if (alpha > 0.01 && TSBHasNativeMaskPresentation(self)) {
+        objc_setAssociatedObject(self, &TSBNativeMaskSeenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     TSBApplySpoilerPresentation(self);
 }
 
@@ -205,91 +227,8 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
     }
 }
 
-// BCNSpoilerView is also used as a reusable presentation shell for ordinary
-// media. The cell's model flag is the truth for whether this post contains a
-// real spoiler; visibility of the shell alone is not enough.
-static BOOL TSBReadSpoilerFlag(id object, NSArray<NSString *> *names, BOOL *found) {
-    if (!object) return NO;
-    for (NSString *name in names) {
-        Ivar ivar = class_getInstanceVariable(object_getClass(object), name.UTF8String);
-        if (ivar) {
-            const char *type = ivar_getTypeEncoding(ivar);
-            if (type && (type[0] == 'B' || type[0] == 'c' || type[0] == 'C')) {
-                *found = YES;
-                return *(uint8_t *)((uint8_t *)(__bridge void *)object + ivar_getOffset(ivar)) != 0;
-            }
-        }
-        SEL selector = NSSelectorFromString(name);
-        if ([object respondsToSelector:selector]) {
-            NSMethodSignature *signature = [object methodSignatureForSelector:selector];
-            if (signature && signature.numberOfArguments == 2 &&
-                (signature.methodReturnType[0] == 'B' || signature.methodReturnType[0] == 'c')) {
-                *found = YES;
-                return ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
-            }
-        }
-    }
-    return NO;
-}
-
-static id TSBReadObjectIvar(id object, NSString *name) {
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name.UTF8String);
-    if (!ivar || ivar_getTypeEncoding(ivar)[0] != '@') return nil;
-    return object_getIvar(object, ivar);
-}
-
-static id TSBReadObjectMember(id object, NSString *name, BOOL *found) {
-    if (!object) return nil;
-    id value = TSBReadObjectIvar(object, name);
-    if (value || class_getInstanceVariable(object_getClass(object), name.UTF8String)) {
-        *found = YES;
-        return value;
-    }
-    SEL selector = NSSelectorFromString(name);
-    if (![object respondsToSelector:selector]) return nil;
-    NSMethodSignature *signature = [object methodSignatureForSelector:selector];
-    if (!signature || signature.numberOfArguments != 2 || signature.methodReturnType[0] != '@') return nil;
-    *found = YES;
-    return ((id (*)(id, SEL))objc_msgSend)(object, selector);
-}
-
-static BOOL TSBCellContainsSpoiler(UIView *view) {
-    UICollectionViewCell *cell = TSBOuterFeedCell(view);
-    if (!cell) return NO;
-    BOOL found = NO;
-    // These are the concrete flags found in the Threads 446 bundle.
-    BOOL value = TSBReadSpoilerFlag(cell, @[@"containsSpoiler"], &found);
-    if (found) return value;
-    for (UIView *candidate = cell; candidate && candidate != cell.superview;
-         candidate = candidate.superview) {
-        for (NSString *name in @[@"cellFragment", @"mediaFragment", @"postPreviewCaption", @"model"]) {
-            BOOL memberFound = NO;
-            id fragment = TSBReadObjectMember(candidate, name, &memberFound);
-            if (!fragment) continue;
-            id nested = TSBReadObjectMember(fragment, @"textPostAppInfo", &memberFound);
-            NSArray *nodes = nested ? @[fragment, nested] : @[fragment];
-            for (id node in nodes) {
-                if (!node) continue;
-                BOOL bodyFound = NO;
-                id body = TSBReadObjectMember(node, @"containsSpoilerInBody", &bodyFound);
-                id attachment = TSBReadObjectMember(node, @"containsSpoilerInAttachment", &bodyFound);
-                if (body || attachment) return YES;
-                BOOL boolFound = NO;
-                if (TSBReadSpoilerFlag(node, @[@"containsSpoiler"], &boolFound) && boolFound)
-                    return YES;
-            }
-        }
-    }
-    return NO;
-}
-
 static BOOL TSBProcessSpoilerOwner(UIView *spoilerView) {
-    if (!TSBCellContainsSpoiler(spoilerView)) {
-        objc_setAssociatedObject(spoilerView, &TSBActiveSpoilerKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        TSBClearSpoilerBadge(spoilerView);
-        return NO;
-    }
-    objc_setAssociatedObject(spoilerView, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (![objc_getAssociatedObject(spoilerView, &TSBNativeMaskSeenKey) boolValue]) return NO;
     TSBApplySpoilerPresentation(spoilerView);
     TSBUpdateSpoilerBadge(spoilerView);
     return YES;
@@ -349,6 +288,7 @@ static void TSBHookedCollectionCellPrepareForReuse(UICollectionViewCell *self, S
         if ([objc_getAssociatedObject(owner, &TSBRemovalAnimationPlayedKey) boolValue])
             TSBOriginalSetHidden(owner, @selector(setHidden:), NO);
         objc_setAssociatedObject(owner, &TSBActiveSpoilerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(owner, &TSBNativeMaskSeenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(owner, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [TSBPendingSpoilerViews removeObject:owner];
         [TSBTrackedSpoilerViews removeObject:owner];
@@ -368,13 +308,6 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     if (!spoilerView.window || spoilerView.bounds.size.width < 4 ||
         spoilerView.bounds.size.height < 4) return;
     UICollectionViewCell *source = TSBOuterFeedCell(spoilerView);
-    if (source && !TSBCellContainsSpoiler(spoilerView)) {
-        TSBLog(@"reject non-spoiler view=%p source=%p class=%@", spoilerView, source,
-            NSStringFromClass(source.class));
-        objc_setAssociatedObject(spoilerView, &TSBActiveSpoilerKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        TSBClearSpoilerBadge(spoilerView);
-        return;
-    }
     UICollectionViewCell *footer = source ? TSBFooterForFeedCell(source) : nil;
     UIView *share = footer ? TSBFooterShareButton(footer) : nil;
     if (share && objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != share)
@@ -561,7 +494,8 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBCaptureSpoilerContext(self);
     [TSBTrackedSpoilerViews addObject:self];
     if (objc_getAssociatedObject(self, &TSBActiveSpoilerKey) == nil) {
-        objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(TSBCellContainsSpoiler(self)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, &TSBActiveSpoilerKey,
+            @([objc_getAssociatedObject(self, &TSBNativeMaskSeenKey) boolValue]), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         if (![objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue]) {
@@ -589,7 +523,8 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     if (self.window) {
         [TSBTrackedSpoilerViews addObject:self];
         if (objc_getAssociatedObject(self, &TSBActiveSpoilerKey) == nil)
-            objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(TSBCellContainsSpoiler(self)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(self, &TSBActiveSpoilerKey,
+                @([objc_getAssociatedObject(self, &TSBNativeMaskSeenKey) boolValue]), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     TSBApplySpoilerPresentation(self);
     TSBRecordHierarchy(self);
@@ -622,7 +557,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         return;
     }
     BOOL wasActive = [objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue];
-    if (!hidden && TSBCellContainsSpoiler(self)) {
+    if (!hidden && [objc_getAssociatedObject(self, &TSBNativeMaskSeenKey) boolValue]) {
         objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (hidden) {
@@ -801,7 +736,8 @@ static void TSBInstallSpoilerHooks(void) {
             if (![view isKindOfClass:cls]) continue;
             [TSBTrackedSpoilerViews addObject:view];
             if (objc_getAssociatedObject(view, &TSBActiveSpoilerKey) == nil)
-                objc_setAssociatedObject(view, &TSBActiveSpoilerKey, @(TSBCellContainsSpoiler(view)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(view, &TSBActiveSpoilerKey,
+                    @([objc_getAssociatedObject(view, &TSBNativeMaskSeenKey) boolValue]), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             TSBApplySpoilerPresentation(view);
             TSBUpdateSpoilerBadge(view);
         }
