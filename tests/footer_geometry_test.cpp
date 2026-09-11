@@ -51,5 +51,10 @@ int main() {
     assert(TSBFindVisualFooter(180, visual, 4) == 3);
     assert(TSBFindVisualFooter(550, visual, 4) == 0);
     assert(TSBFindVisualFooter(350, visual, 4) == -1); // next header blocks next post footer
+    // Native cells touch exactly: the current header must not block its body.
+    assert(TSBFindVisualFooter(150, visual, 4) == 3);
+    // Nor may the preceding post's footer be selected at a shared boundary.
+    TSBVisualRow touching[] = {{100, 150, false, true}, {250, 290, false, true}};
+    assert(TSBFindVisualFooter(150, touching, 2) == 1);
     std::puts("PASS: trailing share placement, fixed native bounds, narrow space, collisions and post/section matching");
 }

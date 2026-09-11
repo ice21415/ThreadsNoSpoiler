@@ -20,7 +20,7 @@ static inline int TSBFindFooterRow(long section, long item, const TSBFeedRow *ro
 static inline int TSBFindVisualFooter(double sourceMinY, const TSBVisualRow *rows, size_t count) {
     int first = -1;
     for (size_t i = 0; i < count; ++i) {
-        if (rows[i].maxY < sourceMinY || (!rows[i].header && !rows[i].footer)) continue;
+        if (rows[i].maxY <= sourceMinY || (!rows[i].header && !rows[i].footer)) continue;
         if (first < 0 || rows[i].minY < rows[first].minY) first = (int)i;
     }
     return first >= 0 && rows[first].footer ? first : -1;

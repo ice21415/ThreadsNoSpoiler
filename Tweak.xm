@@ -26,6 +26,7 @@ static NSMutableSet<NSString *> *TSBFooterHookedClasses;
 static void (*TSBOriginalFooterLayoutSubviews)(id, SEL);
 static void (*TSBOriginalFooterPrepareForReuse)(id, SEL);
 static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
+static void (*TSBOriginalCollectionCellPrepareForReuse)(id, SEL);
 static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 static void (*TSBOriginalSetAlpha)(id, SEL, CGFloat);
 static char TSBRequestedAlphaKey;
@@ -217,8 +218,25 @@ static void TSBHookedCollectionCellDidMoveToWindow(UICollectionViewCell *self, S
     else TSBRefreshFooterCell(self);
 }
 
+static void TSBHookedCollectionCellPrepareForReuse(UICollectionViewCell *self, SEL cmd) {
+    // Detaching from a window is not reuse. Reset identity only when UIKit
+    // explicitly recycles the cell, including source cells and embedded UFI.
+    for (UIView *owner in TSBTrackedSpoilerViews.allObjects) {
+        if (![owner isDescendantOfView:self]) continue;
+        TSBClearSpoilerBadge(owner);
+        if ([objc_getAssociatedObject(owner, &TSBRemovalAnimationPlayedKey) boolValue])
+            TSBOriginalSetHidden(owner, @selector(setHidden:), NO);
+        objc_setAssociatedObject(owner, &TSBActiveSpoilerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(owner, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [TSBPendingSpoilerViews removeObject:owner];
+        [TSBTrackedSpoilerViews removeObject:owner];
+    }
+    TSBClearFooterCell(self);
+    TSBOriginalCollectionCellPrepareForReuse(self, cmd);
+}
+
 static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
-    if (!TSBEnabled() || !TSBShowBadge() ||
+    if (!spoilerView.window || !TSBEnabled() || !TSBShowBadge() ||
         ![objc_getAssociatedObject(spoilerView, &TSBActiveSpoilerKey) boolValue] ||
         spoilerView.bounds.size.width < 4 || spoilerView.bounds.size.height < 4) {
         TSBClearSpoilerBadge(spoilerView);
@@ -397,12 +415,9 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBApplySpoilerPresentation(self);
     if (self.window == nil) {
         TSBClearSpoilerBadge(self);
-        objc_setAssociatedObject(self, &TSBActiveSpoilerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(self, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBLastVisibleFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [TSBPendingSpoilerViews removeObject:self];
-        [TSBTrackedSpoilerViews removeObject:self];
         return;
     }
     TSBRecordHierarchy(self);
@@ -433,6 +448,12 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
 static void (*TSBOriginalLayoutSubviews)(id, SEL);
 static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBOriginalLayoutSubviews(self, _cmd);
+    // Hooks can be installed after didMoveToWindow has already occurred.
+    if (self.window) {
+        [TSBTrackedSpoilerViews addObject:self];
+        if (objc_getAssociatedObject(self, &TSBActiveSpoilerKey) == nil)
+            objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(!self.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     TSBApplySpoilerPresentation(self);
     TSBRecordHierarchy(self);
     TSBCaptureSpoilerContext(self);
@@ -613,6 +634,24 @@ static void TSBInstallSpoilerHooks(void) {
         MSHookMessageEx(cls, @selector(setHidden:), (IMP)TSBHookedSetHidden, (IMP *)&TSBOriginalSetHidden);
         MSHookMessageEx(cls, @selector(setAlpha:), (IMP)TSBHookedSetAlpha, (IMP *)&TSBOriginalSetAlpha);
         [TSBHookedClasses addObject:name];
+        // Seed views that were already on screen before the delayed hook
+        // installation; their first didMoveToWindow event was missed.
+        NSMutableArray<UIView *> *pending = [NSMutableArray array];
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if ([scene isKindOfClass:UIWindowScene.class])
+                [pending addObjectsFromArray:((UIWindowScene *)scene).windows];
+        }
+        while (pending.count) {
+            UIView *view = pending.lastObject;
+            [pending removeLastObject];
+            [pending addObjectsFromArray:view.subviews];
+            if (![view isKindOfClass:cls]) continue;
+            [TSBTrackedSpoilerViews addObject:view];
+            if (objc_getAssociatedObject(view, &TSBActiveSpoilerKey) == nil)
+                objc_setAssociatedObject(view, &TSBActiveSpoilerKey, @(!view.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            TSBApplySpoilerPresentation(view);
+            TSBUpdateSpoilerBadge(view);
+        }
         TSBLog(@"hooked %@", name);
         // The original IMP storage is intentionally single-use: one concrete
         // BCNSpoilerView implementation owns the descendant masking hierarchy.
@@ -653,6 +692,7 @@ static void TSBInstallFooterHooks(void) {
         [NSRunLoop.mainRunLoop addTimer:visibilityTimer forMode:NSRunLoopCommonModes];
         MSHookMessageEx(UIViewController.class, @selector(viewDidAppear:), (IMP)TSBHookedViewDidAppear, (IMP *)&TSBOriginalViewDidAppear);
         MSHookMessageEx(UICollectionViewCell.class, @selector(didMoveToWindow), (IMP)TSBHookedCollectionCellDidMoveToWindow, (IMP *)&TSBOriginalCollectionCellDidMoveToWindow);
+        MSHookMessageEx(UICollectionViewCell.class, @selector(prepareForReuse), (IMP)TSBHookedCollectionCellPrepareForReuse, (IMP *)&TSBOriginalCollectionCellPrepareForReuse);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
             TSBInstallFooterHooks();
