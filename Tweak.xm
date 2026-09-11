@@ -304,6 +304,16 @@ static UICollectionViewCell *TSBFooterForPostIdentifier(UICollectionViewCell *so
     return nil;
 }
 
+static UICollectionViewCell *TSBResolvedFooterForSource(UICollectionViewCell *source, NSString **postIDOut) {
+    NSString *postID = TSBPostIdentifierForCell(source);
+    if (postIDOut) *postIDOut = postID;
+    if (postID.length) return TSBFooterForPostIdentifier(source, postID);
+    // Pure text cells in this Threads build do not expose postId through the
+    // Objective-C runtime. The layout helper confines this fallback to one
+    // section and stops at the next post header.
+    return source ? TSBFooterForFeedCell(source) : nil;
+}
+
 static void TSBAppendHeaderTree(UIView *view, NSUInteger depth) {
     if (TSBLastSpoilerContext.count >= 120 || depth > 12) return;
     NSString *indent = [@"" stringByPaddingToLength:depth * 2 withString:@" " startingAtIndex:0];
@@ -402,12 +412,15 @@ static void TSBClearFooterCell(UICollectionViewCell *cell) {
 
 static void TSBRefreshFooterCell(UICollectionViewCell *cell) {
     NSString *footerPostID = TSBPostIdentifierForCell(cell);
-    if (!footerPostID.length) return;
     // Footer visibility can begin after the source spoiler's last layout pass,
     // but never let an adjacent post refresh this footer.
     for (UIView *owner in TSBTrackedSpoilerViews.allObjects) {
         UICollectionViewCell *source = TSBOuterFeedCell(owner);
-        if ([[TSBPostIdentifierForCell(source) description] isEqualToString:footerPostID]) TSBUpdateSpoilerBadge(owner);
+        NSString *sourcePostID = TSBPostIdentifierForCell(source);
+        BOOL samePost = footerPostID.length && [sourcePostID isEqualToString:footerPostID];
+        BOOL sameFallbackFooter = !footerPostID.length && !sourcePostID.length &&
+            TSBFooterForFeedCell(source) == cell;
+        if (samePost || sameFallbackFooter) TSBUpdateSpoilerBadge(owner);
     }
 }
 
@@ -462,12 +475,12 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     if (!spoilerView.window || spoilerView.bounds.size.width < 4 ||
         spoilerView.bounds.size.height < 4) return;
     UICollectionViewCell *source = TSBOuterFeedCell(spoilerView);
-    NSString *postID = TSBPostIdentifierForCell(source);
-    UICollectionViewCell *footer = postID.length ? TSBFooterForPostIdentifier(source, postID) : nil;
+    NSString *postID = nil;
+    UICollectionViewCell *footer = TSBResolvedFooterForSource(source, &postID);
     UIView *share = footer ? TSBFooterShareButton(footer) : nil;
     if (share && objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != share)
         TSBClearSpoilerBadge(spoilerView);
-    NSString *status = !source ? @"no source feed cell" : !postID.length ? @"waiting for source post ID" : !footer ? @"waiting for matching post-ID footer" :
+    NSString *status = !source ? @"no source feed cell" : !footer ? (postID.length ? @"waiting for matching post-ID footer" : @"waiting for this post's footer") :
         !share ? @"waiting for visible share button" : @"footer share anchor resolved";
     if (![objc_getAssociatedObject(spoilerView, &TSBLastResolutionKey) isEqual:status])
         TSBLog(@"resolve spoiler=%p source=%p footer=%p share=%p %@", spoilerView, source, footer, share, status);
