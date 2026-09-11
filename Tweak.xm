@@ -192,7 +192,7 @@ static NSString *TSBPostIdentifierForCell(UICollectionViewCell *cell) {
     NSMutableSet<NSValue *> *seen = [NSMutableSet set];
     NSArray<NSString *> *postGetters = @[@"postId", @"postID"];
     NSArray<NSString *> *modelGetters = @[@"viewModel", @"model", @"cellContext", @"context",
-                                         @"fragment", @"item", @"configuration", @"data", @"containerCell"];
+                                         @"fragment", @"item", @"configuration", @"data"];
     for (NSUInteger inspected = 0; pending.count && inspected < 80; inspected++) {
         id object = pending.lastObject;
         [pending removeLastObject];
@@ -214,20 +214,13 @@ static NSString *TSBPostIdentifierForCell(UICollectionViewCell *cell) {
             for (unsigned int index = 0; index < count; index++) {
                 Ivar ivar = ivars[index];
                 const char *type = ivar_getTypeEncoding(ivar);
+                if (!type || type[0] != '@') continue;
                 NSString *name = @(ivar_getName(ivar));
                 NSString *lowercase = name.lowercaseString;
-                // Swift does not publish an Objective-C type encoding for its
-                // stored references (the diagnostic prints an empty type for
-                // cellContext/mediaFragment).  Read only this explicit model
-                // allow-list when that encoding is absent; never interpret
-                // arbitrary scalar Swift storage as an object.
                 BOOL namedPostID = [lowercase containsString:@"postid"];
                 BOOL namedModelField = [lowercase containsString:@"model"] ||
                     [lowercase containsString:@"context"] || [lowercase containsString:@"fragment"] ||
-                    [lowercase containsString:@"containercell"] || [lowercase containsString:@"viewmodel"] ||
-                    [lowercase containsString:@"configuration"];
-                BOOL objectTyped = type && type[0] == '@';
-                if (!objectTyped && !namedPostID && !namedModelField) continue;
+                    [lowercase containsString:@"viewmodel"] || [lowercase containsString:@"configuration"];
                 id value = object_getIvar(object, ivar);
                 if (namedPostID) {
                     NSString *postID = TSBIdentifierString(value);
