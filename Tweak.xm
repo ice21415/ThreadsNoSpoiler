@@ -238,6 +238,21 @@ static id TSBReadObjectIvar(id object, NSString *name) {
     return object_getIvar(object, ivar);
 }
 
+static id TSBReadObjectMember(id object, NSString *name, BOOL *found) {
+    if (!object) return nil;
+    id value = TSBReadObjectIvar(object, name);
+    if (value || class_getInstanceVariable(object_getClass(object), name.UTF8String)) {
+        *found = YES;
+        return value;
+    }
+    SEL selector = NSSelectorFromString(name);
+    if (![object respondsToSelector:selector]) return nil;
+    NSMethodSignature *signature = [object methodSignatureForSelector:selector];
+    if (!signature || signature.numberOfArguments != 2 || signature.methodReturnType[0] != '@') return nil;
+    *found = YES;
+    return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
 static BOOL TSBCellContainsSpoiler(UIView *view) {
     UICollectionViewCell *cell = TSBOuterFeedCell(view);
     if (!cell) return NO;
@@ -248,18 +263,23 @@ static BOOL TSBCellContainsSpoiler(UIView *view) {
     for (UIView *candidate = cell; candidate && candidate != cell.superview;
          candidate = candidate.superview) {
         for (NSString *name in @[@"cellFragment", @"mediaFragment", @"postPreviewCaption", @"model"]) {
-            id fragment = TSBReadObjectIvar(candidate, name);
-            BOOL body = TSBReadSpoilerFlag(fragment,
-                @[@"containsSpoilerInBody", @"containsSpoilerInAttachment", @"containsSpoiler"], &found);
-            if (found) return body;
-            id nested = TSBReadObjectIvar(fragment, @"textPostAppInfo");
-            body = TSBReadSpoilerFlag(nested,
-                @[@"containsSpoilerInBody", @"containsSpoilerInAttachment", @"containsSpoiler"], &found);
-            if (found) return body;
+            BOOL memberFound = NO;
+            id fragment = TSBReadObjectMember(candidate, name, &memberFound);
+            if (!fragment) continue;
+            id nested = TSBReadObjectMember(fragment, @"textPostAppInfo", &memberFound);
+            NSArray *nodes = nested ? @[fragment, nested] : @[fragment];
+            for (id node in nodes) {
+                if (!node) continue;
+                BOOL bodyFound = NO;
+                id body = TSBReadObjectMember(node, @"containsSpoilerInBody", &bodyFound);
+                id attachment = TSBReadObjectMember(node, @"containsSpoilerInAttachment", &bodyFound);
+                if (body || attachment) return YES;
+                BOOL boolFound = NO;
+                if (TSBReadSpoilerFlag(node, @[@"containsSpoiler"], &boolFound) && boolFound)
+                    return YES;
+            }
         }
     }
-    if ([NSStringFromClass(cell.class) containsString:@"FeedTextCell"])
-        return YES;
     return NO;
 }
 
