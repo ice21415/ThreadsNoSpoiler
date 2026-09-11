@@ -8,6 +8,7 @@ cp -- "$package" docs/
 cd docs
 dpkg-scanpackages --multiversion . /dev/null > Packages
 gzip -n -9 -c Packages > Packages.gz
+release_file=$(mktemp)
 apt-ftparchive \
   -o APT::FTPArchive::Release::Architectures=iphoneos-arm64 \
   -o APT::FTPArchive::Release::Codename=ios \
@@ -16,4 +17,5 @@ apt-ftparchive \
   -o APT::FTPArchive::Release::Label='Threads No Spoiler' \
   -o APT::FTPArchive::Release::Origin='Threads No Spoiler' \
   -o APT::FTPArchive::Release::Suite=stable \
-  release . > Release
+  release . | sed '/ Release$/d' > "$release_file"
+mv -- "$release_file" Release
