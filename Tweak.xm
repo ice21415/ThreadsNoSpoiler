@@ -210,6 +210,7 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
 static BOOL TSBCellContainsSpoiler(UIView *view) {
     UICollectionViewCell *cell = TSBOuterFeedCell(view);
     if (!cell) return NO;
+    BOOL foundConcreteFlag = NO;
     for (UIView *candidate = cell; candidate && candidate != cell.superview;
          candidate = candidate.superview) {
         // Swift stores this property as a primitive ivar on BCNFeedBaseCell
@@ -219,6 +220,7 @@ static BOOL TSBCellContainsSpoiler(UIView *view) {
         if (spoilerIvar) {
             const char *type = ivar_getTypeEncoding(spoilerIvar);
             if (type && (type[0] == 'B' || type[0] == 'c' || type[0] == 'C')) {
+                foundConcreteFlag = YES;
                 uint8_t value = *(uint8_t *)((uint8_t *)(__bridge void *)candidate + ivar_getOffset(spoilerIvar));
                 return value != 0;
             }
@@ -234,6 +236,12 @@ static BOOL TSBCellContainsSpoiler(UIView *view) {
             if (value) return YES;
         }
     }
+    // BCNFeedTextCell does not expose the base cell flag in the runtime
+    // layout, although its BCNSpoilerView is the text spoiler implementation.
+    // Keep that path eligible; media cells with a concrete false flag remain
+    // rejected above.
+    if (!foundConcreteFlag && [NSStringFromClass(cell.class) containsString:@"FeedTextCell"])
+        return YES;
     return NO;
 }
 
