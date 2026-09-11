@@ -204,6 +204,28 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
     }
 }
 
+// BCNSpoilerView is also used as a reusable presentation shell for ordinary
+// media. The cell's model flag is the truth for whether this post contains a
+// real spoiler; visibility of the shell alone is not enough.
+static BOOL TSBCellContainsSpoiler(UIView *view) {
+    UICollectionViewCell *cell = TSBOuterFeedCell(view);
+    if (!cell) return NO;
+    for (UIView *candidate = cell; candidate && candidate != cell.superview;
+         candidate = candidate.superview) {
+        for (NSString *name in @[@"containsSpoiler", @"hasSpoiler", @"isSpoiler"]) {
+            SEL selector = NSSelectorFromString(name);
+            if (![candidate respondsToSelector:selector]) continue;
+            NSMethodSignature *signature = [candidate methodSignatureForSelector:selector];
+            if (!signature || signature.numberOfArguments != 2) continue;
+            const char *type = signature.methodReturnType;
+            if (type[0] != 'B' && type[0] != 'c') continue;
+            BOOL value = ((BOOL (*)(id, SEL))objc_msgSend)(candidate, selector);
+            if (value) return YES;
+        }
+    }
+    return NO;
+}
+
 static void TSBClearFooterCell(UICollectionViewCell *cell) {
     TSBRestoreFooterShare(cell);
     NSHashTable *owners = objc_getAssociatedObject(cell, &TSBBadgeOwnerKey);
@@ -463,7 +485,7 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBCaptureSpoilerContext(self);
     [TSBTrackedSpoilerViews addObject:self];
     if (objc_getAssociatedObject(self, &TSBActiveSpoilerKey) == nil) {
-        objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(!self.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(TSBCellContainsSpoiler(self)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         if (![objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue]) {
@@ -491,7 +513,7 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     if (self.window) {
         [TSBTrackedSpoilerViews addObject:self];
         if (objc_getAssociatedObject(self, &TSBActiveSpoilerKey) == nil)
-            objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(!self.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(TSBCellContainsSpoiler(self)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     TSBApplySpoilerPresentation(self);
     TSBRecordHierarchy(self);
@@ -524,7 +546,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         return;
     }
     BOOL wasActive = [objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue];
-    if (!hidden) {
+    if (!hidden && TSBCellContainsSpoiler(self)) {
         objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (hidden) {
@@ -703,7 +725,7 @@ static void TSBInstallSpoilerHooks(void) {
             if (![view isKindOfClass:cls]) continue;
             [TSBTrackedSpoilerViews addObject:view];
             if (objc_getAssociatedObject(view, &TSBActiveSpoilerKey) == nil)
-                objc_setAssociatedObject(view, &TSBActiveSpoilerKey, @(!view.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(view, &TSBActiveSpoilerKey, @(TSBCellContainsSpoiler(view)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             TSBApplySpoilerPresentation(view);
             TSBUpdateSpoilerBadge(view);
         }
