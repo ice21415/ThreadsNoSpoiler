@@ -33,6 +33,7 @@ static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 static void (*TSBOriginalSetAlpha)(id, SEL, CGFloat);
 static char TSBRequestedAlphaKey;
 static char TSBNativeMaskSeenKey;
+static char TSBPostIdentifierKey;
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *share);
 static void TSBClearSpoilerBadge(UIView *spoilerView);
@@ -165,6 +166,97 @@ static UICollectionViewCell *TSBOuterFeedCell(UIView *view) {
     return fallback;
 }
 
+// A collection is only a rendering surface: it can contain several independent
+// posts, quoted posts and recycled cells.  The model post ID is the only safe
+// ownership key for a spoiler view and its UFI footer.
+static NSString *TSBIdentifierString(id value) {
+    if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) return value;
+    if ([value isKindOfClass:NSNumber.class]) return [(NSNumber *)value stringValue];
+    return nil;
+}
+
+static id TSBObjectGetter(id object, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    if (!object || ![object respondsToSelector:selector]) return nil;
+    NSMethodSignature *signature = [object methodSignatureForSelector:selector];
+    if (!signature || signature.numberOfArguments != 2 || signature.methodReturnType[0] != '@') return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static NSString *TSBPostIdentifierForCell(UICollectionViewCell *cell) {
+    if (!cell) return nil;
+    NSString *cached = objc_getAssociatedObject(cell, &TSBPostIdentifierKey);
+    if (cached.length) return cached;
+
+    NSMutableArray<id> *pending = [NSMutableArray arrayWithObject:cell];
+    NSMutableSet<NSValue *> *seen = [NSMutableSet set];
+    NSArray<NSString *> *postGetters = @[@"postId", @"postID"];
+    NSArray<NSString *> *modelGetters = @[@"viewModel", @"model", @"cellContext", @"context",
+                                         @"fragment", @"item", @"configuration", @"data"];
+    for (NSUInteger inspected = 0; pending.count && inspected < 80; inspected++) {
+        id object = pending.lastObject;
+        [pending removeLastObject];
+        if (!object) continue;
+        NSValue *address = [NSValue valueWithPointer:(__bridge const void *)object];
+        if ([seen containsObject:address]) continue;
+        [seen addObject:address];
+
+        for (NSString *getter in postGetters) {
+            NSString *postID = TSBIdentifierString(TSBObjectGetter(object, getter));
+            if (postID.length) {
+                objc_setAssociatedObject(cell, &TSBPostIdentifierKey, postID, OBJC_ASSOCIATION_COPY_NONATOMIC);
+                return postID;
+            }
+        }
+        for (Class cls = object_getClass(object); cls && cls != NSObject.class; cls = class_getSuperclass(cls)) {
+            unsigned int count = 0;
+            Ivar *ivars = class_copyIvarList(cls, &count);
+            for (unsigned int index = 0; index < count; index++) {
+                Ivar ivar = ivars[index];
+                const char *type = ivar_getTypeEncoding(ivar);
+                if (!type || type[0] != '@') continue;
+                NSString *name = @(ivar_getName(ivar));
+                id value = object_getIvar(object, ivar);
+                if ([name.lowercaseString containsString:@"postid"]) {
+                    NSString *postID = TSBIdentifierString(value);
+                    if (postID.length) {
+                        free(ivars);
+                        objc_setAssociatedObject(cell, &TSBPostIdentifierKey, postID, OBJC_ASSOCIATION_COPY_NONATOMIC);
+                        return postID;
+                    }
+                }
+                NSString *lowercase = name.lowercaseString;
+                if (value && ([lowercase containsString:@"model"] || [lowercase containsString:@"context"] ||
+                              [lowercase containsString:@"fragment"] || [lowercase containsString:@"item"] ||
+                              [lowercase containsString:@"post"] || [lowercase containsString:@"data"])) {
+                    [pending addObject:value];
+                }
+            }
+            free(ivars);
+        }
+        for (NSString *getter in modelGetters) {
+            id value = TSBObjectGetter(object, getter);
+            if (value && ![value isKindOfClass:UIView.class]) [pending addObject:value];
+        }
+    }
+    return nil;
+}
+
+static UICollectionViewCell *TSBFooterForPostIdentifier(UICollectionViewCell *source, NSString *postID) {
+    if (!source || !postID.length) return nil;
+    if (TSBIsFooterCell(source) && [TSBPostIdentifierForCell(source) isEqualToString:postID]) return source;
+    UICollectionView *collection = [source.superview isKindOfClass:UICollectionView.class] ?
+        (UICollectionView *)source.superview : nil;
+    NSIndexPath *sourceIndex = collection ? [collection indexPathForCell:source] : nil;
+    if (!sourceIndex) return nil;
+    for (UICollectionViewCell *candidate in collection.visibleCells) {
+        NSIndexPath *index = [collection indexPathForCell:candidate];
+        if (!index || index.section != sourceIndex.section || index.item <= sourceIndex.item || !TSBIsFooterCell(candidate)) continue;
+        if ([[TSBPostIdentifierForCell(candidate) description] isEqualToString:postID]) return candidate;
+    }
+    return nil;
+}
+
 static void TSBAppendHeaderTree(UIView *view, NSUInteger depth) {
     if (TSBLastSpoilerContext.count >= 120 || depth > 12) return;
     NSString *indent = [@"" stringByPaddingToLength:depth * 2 withString:@" " startingAtIndex:0];
@@ -252,10 +344,13 @@ static void TSBClearFooterCell(UICollectionViewCell *cell) {
 }
 
 static void TSBRefreshFooterCell(UICollectionViewCell *cell) {
-    // Footer visibility can begin after the source spoiler's last layout pass.
+    NSString *footerPostID = TSBPostIdentifierForCell(cell);
+    if (!footerPostID.length) return;
+    // Footer visibility can begin after the source spoiler's last layout pass,
+    // but never let an adjacent post refresh this footer.
     for (UIView *owner in TSBTrackedSpoilerViews.allObjects) {
         UICollectionViewCell *source = TSBOuterFeedCell(owner);
-        if (source.superview == cell.superview) TSBUpdateSpoilerBadge(owner);
+        if ([[TSBPostIdentifierForCell(source) description] isEqualToString:footerPostID]) TSBUpdateSpoilerBadge(owner);
     }
 }
 
@@ -294,6 +389,7 @@ static void TSBHookedCollectionCellPrepareForReuse(UICollectionViewCell *self, S
         [TSBTrackedSpoilerViews removeObject:owner];
     }
     TSBClearFooterCell(self);
+    objc_setAssociatedObject(self, &TSBPostIdentifierKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     TSBOriginalCollectionCellPrepareForReuse(self, cmd);
 }
 
@@ -308,11 +404,12 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     if (!spoilerView.window || spoilerView.bounds.size.width < 4 ||
         spoilerView.bounds.size.height < 4) return;
     UICollectionViewCell *source = TSBOuterFeedCell(spoilerView);
-    UICollectionViewCell *footer = source ? TSBFooterForFeedCell(source) : nil;
+    NSString *postID = TSBPostIdentifierForCell(source);
+    UICollectionViewCell *footer = postID.length ? TSBFooterForPostIdentifier(source, postID) : nil;
     UIView *share = footer ? TSBFooterShareButton(footer) : nil;
     if (share && objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != share)
         TSBClearSpoilerBadge(spoilerView);
-    NSString *status = !source ? @"no source feed cell" : !footer ? @"waiting for this post's footer" :
+    NSString *status = !source ? @"no source feed cell" : !postID.length ? @"waiting for source post ID" : !footer ? @"waiting for matching post-ID footer" :
         !share ? @"waiting for visible share button" : @"footer share anchor resolved";
     if (![objc_getAssociatedObject(spoilerView, &TSBLastResolutionKey) isEqual:status])
         TSBLog(@"resolve spoiler=%p source=%p footer=%p share=%p %@", spoilerView, source, footer, share, status);
@@ -453,10 +550,6 @@ static void TSBCheckPendingSpoilers(void) {
     }
 }
 
-static BOOL TSBIsSpoilerContainer(UIView *view) {
-    return [NSStringFromClass(view.class) containsString:@"BCNSpoilerView"];
-}
-
 static void TSBRevealCarouselSpoilersIfNeeded(UIView *spoilerView) {
     if (!TSBEnabled() ||
         [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] ||
@@ -464,17 +557,9 @@ static void TSBRevealCarouselSpoilersIfNeeded(UIView *spoilerView) {
         [objc_getAssociatedObject(spoilerView, &TSBPreviewingOriginalKey) boolValue]) {
         return;
     }
-    UIView *post = TSBPostContainer(spoilerView) ?: spoilerView;
-    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:post];
-    while (pending.count) {
-        UIView *view = pending.lastObject;
-        [pending removeLastObject];
-        if ((view == spoilerView || TSBIsSpoilerContainer(view)) &&
-            ![objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue]) {
-            TSBProcessSpoilerOwner(view);
-        }
-        [pending addObjectsFromArray:view.subviews];
-    }
+    // Each carousel page receives its own lifecycle call.  Walking the shared
+    // collection here merges neighboring posts and creates false badges.
+    TSBProcessSpoilerOwner(spoilerView);
 }
 
 static void (*TSBOriginalDidMoveToWindow)(id, SEL);
