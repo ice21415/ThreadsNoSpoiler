@@ -20,7 +20,14 @@ cd ThreadsNoSpoiler
 make package
 ```
 
-The resulting Debian package belongs on a jailbroken test device. This Windows workspace has no Theos toolchain, so it cannot build the package here.
+The resulting Debian package belongs on a jailbroken test device. In this Windows workspace, build using the installed WSL distribution and its Linux filesystem (required for signing):
+
+```powershell
+wsl -d Ubuntu-Theos -u theos -- bash scripts/build-package.sh
+wsl -d Ubuntu-Theos -- bash scripts/update-repository.sh packages/com.example.threadsnospoiler_0.1.39_iphoneos-arm64.deb
+```
+
+The repository script retains previous packages and regenerates the APT indexes and checksums.
 
 ## Scope
 
