@@ -75,7 +75,45 @@ static BOOL TSBShowBadge(void) {
 
 // Preserve the native spoiler model and hierarchy so badges and previews
 // remain available. Suppress only the concrete spoiler overlay's opacity.
+static id TSBObjectGetter(id object, NSString *name);
 static BOOL TSBHasNativeMaskPresentation(UIView *view);
+
+static BOOL TSBBooleanGetter(id object, NSString *name, BOOL *available) {
+    if (available) *available = NO;
+    SEL selector = NSSelectorFromString(name);
+    if (!object || ![object respondsToSelector:selector]) return NO;
+    NSMethodSignature *signature = [object methodSignatureForSelector:selector];
+    if (!signature || signature.numberOfArguments != 2) return NO;
+    const char *type = signature.methodReturnType;
+    if (!type || (type[0] != 'B' && type[0] != 'c')) return NO;
+    if (available) *available = YES;
+    return ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static BOOL TSBHasSpoilerSemanticState(UIView *view, BOOL *known) {
+    if (known) *known = NO;
+    BOOL result = NO;
+    for (NSString *getter in @[@"isSpoilerMaskVisible", @"hasSpoilerContent", @"isSpoilerMedia"]) {
+        BOOL available = NO;
+        BOOL value = TSBBooleanGetter(view, getter, &available);
+        if (available) {
+            // A false isSpoilerMedia value only says this is text; it does
+            // not disprove a text spoiler and must not disable layer fallback.
+            if (value || ![getter isEqualToString:@"isSpoilerMedia"]) {
+                if (known) *known = YES;
+            }
+            result = result || value;
+        }
+    }
+    for (NSString *getter in @[@"spoilerBoxes", @"spoilerRevealHandler"]) {
+        id value = TSBObjectGetter(view, getter);
+        if (value) {
+            if (known) *known = YES;
+            if ([value respondsToSelector:@selector(count)] && [value count] > 0) result = YES;
+        }
+    }
+    return result;
+}
 static void TSBApplySpoilerPresentation(UIView *view) {
     if (!view) return;
     BOOL preview = [objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue];
@@ -116,10 +154,13 @@ static BOOL TSBHasNativeMaskPresentation(UIView *view) {
         UIView *candidate = pending.lastObject;
         [pending removeLastObject];
         NSString *name = NSStringFromClass(candidate.class);
+        BOOL knownSpoilerState = NO;
+        BOOL semanticSpoiler = [name containsString:@"BCNSpoilerView"] &&
+            TSBHasSpoilerSemanticState(candidate, &knownSpoilerState);
         if ([candidate isKindOfClass:UIVisualEffectView.class] ||
             [name containsString:@"SpoilerMask"] || [name containsString:@"VisualEffectBackdrop"] ||
-            ([name containsString:@"BCNSpoilerView"] &&
-             (candidate.layer.mask != nil || candidate.layer.sublayers.count > 0))) return YES;
+            (semanticSpoiler && knownSpoilerState) ||
+            ([name containsString:@"BCNSpoilerView"] && !knownSpoilerState && candidate.layer.mask != nil)) return YES;
         [pending addObjectsFromArray:candidate.subviews];
     }
     return NO;
@@ -307,7 +348,10 @@ static UICollectionViewCell *TSBFooterForPostIdentifier(UICollectionViewCell *so
 static UICollectionViewCell *TSBResolvedFooterForSource(UICollectionViewCell *source, NSString **postIDOut) {
     NSString *postID = TSBPostIdentifierForCell(source);
     if (postIDOut) *postIDOut = postID;
-    if (postID.length) return TSBFooterForPostIdentifier(source, postID);
+    if (postID.length) {
+        UICollectionViewCell *matched = TSBFooterForPostIdentifier(source, postID);
+        if (matched) return matched;
+    }
     // Pure text cells in this Threads build do not expose postId through the
     // Objective-C runtime. The layout helper confines this fallback to one
     // section and stops at the next post header.
@@ -418,7 +462,7 @@ static void TSBRefreshFooterCell(UICollectionViewCell *cell) {
         UICollectionViewCell *source = TSBOuterFeedCell(owner);
         NSString *sourcePostID = TSBPostIdentifierForCell(source);
         BOOL samePost = footerPostID.length && [sourcePostID isEqualToString:footerPostID];
-        BOOL sameFallbackFooter = !footerPostID.length && !sourcePostID.length &&
+        BOOL sameFallbackFooter = (!footerPostID.length || !sourcePostID.length || !samePost) &&
             TSBFooterForFeedCell(source) == cell;
         if (samePost || sameFallbackFooter) TSBUpdateSpoilerBadge(owner);
     }
