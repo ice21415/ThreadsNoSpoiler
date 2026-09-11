@@ -397,9 +397,12 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBApplySpoilerPresentation(self);
     if (self.window == nil) {
         TSBClearSpoilerBadge(self);
+        objc_setAssociatedObject(self, &TSBActiveSpoilerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBLastVisibleFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [TSBPendingSpoilerViews removeObject:self];
+        [TSBTrackedSpoilerViews removeObject:self];
         return;
     }
     TSBRecordHierarchy(self);
@@ -460,25 +463,27 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         TSBOriginalSetHidden(self, _cmd, NO);
         return;
     }
-    objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @(!hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL wasActive = [objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue];
+    if (!hidden) {
+        objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     if (hidden) {
-        TSBClearSpoilerBadge(self);
         [TSBPendingSpoilerViews removeObject:self];
-        objc_setAssociatedObject(self, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBLastVisibleFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // Threads briefly hides the spoiler overlay after its reveal pass.
+        // Keep the post marked active, and therefore keep its footer badge,
+        // until the view actually leaves the window or its cell is reused.
+        if (wasActive) TSBUpdateSpoilerBadge(self);
+        else {
+            TSBClearSpoilerBadge(self);
+            objc_setAssociatedObject(self, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
         TSBOriginalSetHidden(self, _cmd, YES);
         return;
     }
     BOOL shouldForceHide = TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey];
     if (shouldForceHide) {
-        BOOL isKnownSpoiler = [objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue];
-        if (hidden && !isKnownSpoiler) {
-            TSBClearSpoilerBadge(self);
-            [TSBPendingSpoilerViews removeObject:self];
-            TSBOriginalSetHidden(self, _cmd, YES);
-            return;
-        }
         if (!hidden) {
             objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             TSBUpdateSpoilerBadge(self);
