@@ -160,7 +160,8 @@ static BOOL TSBHasNativeMaskPresentation(UIView *view) {
         if ([candidate isKindOfClass:UIVisualEffectView.class] ||
             [name containsString:@"SpoilerMask"] || [name containsString:@"VisualEffectBackdrop"] ||
             (semanticSpoiler && knownSpoilerState) ||
-            ([name containsString:@"BCNSpoilerView"] && !knownSpoilerState && candidate.layer.mask != nil)) return YES;
+            ([name containsString:@"BCNSpoilerView"] &&
+             (candidate.layer.mask != nil || candidate.layer.sublayers.count > 0))) return YES;
         [pending addObjectsFromArray:candidate.subviews];
     }
     return NO;
