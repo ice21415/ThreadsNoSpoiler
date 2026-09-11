@@ -207,41 +207,56 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
 // BCNSpoilerView is also used as a reusable presentation shell for ordinary
 // media. The cell's model flag is the truth for whether this post contains a
 // real spoiler; visibility of the shell alone is not enough.
+static BOOL TSBReadSpoilerFlag(id object, NSArray<NSString *> *names, BOOL *found) {
+    if (!object) return NO;
+    for (NSString *name in names) {
+        Ivar ivar = class_getInstanceVariable(object_getClass(object), name.UTF8String);
+        if (ivar) {
+            const char *type = ivar_getTypeEncoding(ivar);
+            if (type && (type[0] == 'B' || type[0] == 'c' || type[0] == 'C')) {
+                *found = YES;
+                return *(uint8_t *)((uint8_t *)(__bridge void *)object + ivar_getOffset(ivar)) != 0;
+            }
+        }
+        SEL selector = NSSelectorFromString(name);
+        if ([object respondsToSelector:selector]) {
+            NSMethodSignature *signature = [object methodSignatureForSelector:selector];
+            if (signature && signature.numberOfArguments == 2 &&
+                (signature.methodReturnType[0] == 'B' || signature.methodReturnType[0] == 'c')) {
+                *found = YES;
+                return ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
+            }
+        }
+    }
+    return NO;
+}
+
+static id TSBReadObjectIvar(id object, NSString *name) {
+    Ivar ivar = class_getInstanceVariable(object_getClass(object), name.UTF8String);
+    if (!ivar || ivar_getTypeEncoding(ivar)[0] != '@') return nil;
+    return object_getIvar(object, ivar);
+}
+
 static BOOL TSBCellContainsSpoiler(UIView *view) {
     UICollectionViewCell *cell = TSBOuterFeedCell(view);
     if (!cell) return NO;
-    BOOL foundConcreteFlag = NO;
+    BOOL found = NO;
+    // These are the concrete flags found in the Threads 446 bundle.
+    BOOL value = TSBReadSpoilerFlag(cell, @[@"containsSpoiler"], &found);
+    if (found) return value;
     for (UIView *candidate = cell; candidate && candidate != cell.superview;
          candidate = candidate.superview) {
-        // Swift stores this property as a primitive ivar on BCNFeedBaseCell
-        // and its media/text subclasses. Read that exact ivar first so an
-        // unrelated presentation getter cannot make ordinary posts match.
-        Ivar spoilerIvar = class_getInstanceVariable(candidate.class, "containsSpoiler");
-        if (spoilerIvar) {
-            const char *type = ivar_getTypeEncoding(spoilerIvar);
-            if (type && (type[0] == 'B' || type[0] == 'c' || type[0] == 'C')) {
-                foundConcreteFlag = YES;
-                uint8_t value = *(uint8_t *)((uint8_t *)(__bridge void *)candidate + ivar_getOffset(spoilerIvar));
-                return value != 0;
-            }
-        }
-        for (NSString *name in @[@"containsSpoiler", @"hasSpoiler", @"isSpoiler"]) {
-            SEL selector = NSSelectorFromString(name);
-            if (![candidate respondsToSelector:selector]) continue;
-            NSMethodSignature *signature = [candidate methodSignatureForSelector:selector];
-            if (!signature || signature.numberOfArguments != 2) continue;
-            const char *type = signature.methodReturnType;
-            if (type[0] != 'B' && type[0] != 'c') continue;
-            BOOL value = ((BOOL (*)(id, SEL))objc_msgSend)(candidate, selector);
-            if (value) return YES;
+        for (NSString *name in @[@"cellFragment", @"mediaFragment", @"postPreviewCaption", @"model"]) {
+            id fragment = TSBReadObjectIvar(candidate, name);
+            BOOL body = TSBReadSpoilerFlag(fragment,
+                @[@"containsSpoilerInBody", @"containsSpoilerInAttachment", @"containsSpoiler"], &found);
+            if (found) return body;
+            id nested = TSBReadObjectIvar(fragment, @"textPostAppInfo");
+            body = TSBReadSpoilerFlag(nested,
+                @[@"containsSpoilerInBody", @"containsSpoilerInAttachment", @"containsSpoiler"], &found);
+            if (found) return body;
         }
     }
-    // BCNFeedTextCell does not expose the base cell flag in the runtime
-    // layout, although its BCNSpoilerView is the text spoiler implementation.
-    // Keep that path eligible; media cells with a concrete false flag remain
-    // rejected above.
-    if (!foundConcreteFlag && [NSStringFromClass(cell.class) containsString:@"FeedTextCell"])
-        return YES;
     return NO;
 }
 
