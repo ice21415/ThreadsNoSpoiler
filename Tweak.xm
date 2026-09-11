@@ -212,6 +212,17 @@ static BOOL TSBCellContainsSpoiler(UIView *view) {
     if (!cell) return NO;
     for (UIView *candidate = cell; candidate && candidate != cell.superview;
          candidate = candidate.superview) {
+        // Swift stores this property as a primitive ivar on BCNFeedBaseCell
+        // and its media/text subclasses. Read that exact ivar first so an
+        // unrelated presentation getter cannot make ordinary posts match.
+        Ivar spoilerIvar = class_getInstanceVariable(candidate.class, "containsSpoiler");
+        if (spoilerIvar) {
+            const char *type = ivar_getTypeEncoding(spoilerIvar);
+            if (type && (type[0] == 'B' || type[0] == 'c' || type[0] == 'C')) {
+                uint8_t value = *(uint8_t *)((uint8_t *)(__bridge void *)candidate + ivar_getOffset(spoilerIvar));
+                return value != 0;
+            }
+        }
         for (NSString *name in @[@"containsSpoiler", @"hasSpoiler", @"isSpoiler"]) {
             SEL selector = NSSelectorFromString(name);
             if (![candidate respondsToSelector:selector]) continue;
@@ -299,6 +310,13 @@ static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
     if (!spoilerView.window || spoilerView.bounds.size.width < 4 ||
         spoilerView.bounds.size.height < 4) return;
     UICollectionViewCell *source = TSBOuterFeedCell(spoilerView);
+    if (source && !TSBCellContainsSpoiler(spoilerView)) {
+        TSBLog(@"reject non-spoiler view=%p source=%p class=%@", spoilerView, source,
+            NSStringFromClass(source.class));
+        objc_setAssociatedObject(spoilerView, &TSBActiveSpoilerKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        TSBClearSpoilerBadge(spoilerView);
+        return;
+    }
     UICollectionViewCell *footer = source ? TSBFooterForFeedCell(source) : nil;
     UIView *share = footer ? TSBFooterShareButton(footer) : nil;
     if (share && objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != share)
