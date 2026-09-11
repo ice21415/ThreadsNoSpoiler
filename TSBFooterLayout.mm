@@ -44,19 +44,29 @@ UICollectionViewCell *TSBFooterForFeedCell(UICollectionViewCell *source) {
     if (!collection || ![collection indexPathForCell:source]) return nil;
     // Some feed layouts embed BCNUFIView in the same cell as the post body.
     if (TSBFindUFIView(source)) return source;
-    CGRect sourceFrame = [source convertRect:source.bounds toView:collection];
+    NSIndexPath *sourceIndex = [collection indexPathForCell:source];
     NSMutableArray<UICollectionViewCell *> *cells = [NSMutableArray array];
-    std::vector<TSBVisualRow> rows;
     for (UICollectionViewCell *cell in collection.visibleCells) {
         NSIndexPath *index = [collection indexPathForCell:cell];
         if (!index) continue;
-        BOOL header = [NSStringFromClass(cell.class) containsString:@"BCNFeedItemHeaderCell"];
-        CGRect frame = [cell convertRect:cell.bounds toView:collection];
-        rows.push_back({CGRectGetMinY(frame), CGRectGetMaxY(frame), (bool)header, (bool)TSBIsFooterCell(cell)});
         [cells addObject:cell];
     }
-    int match = TSBFindVisualFooter(CGRectGetMinY(sourceFrame), rows.data(), rows.size());
-    return match >= 0 ? cells[(NSUInteger)match] : nil;
+    [cells sortUsingComparator:^NSComparisonResult(UICollectionViewCell *left, UICollectionViewCell *right) {
+        NSIndexPath *a = [collection indexPathForCell:left];
+        NSIndexPath *b = [collection indexPathForCell:right];
+        if (a.section != b.section) return a.section < b.section ? NSOrderedAscending : NSOrderedDescending;
+        if (a.item != b.item) return a.item < b.item ? NSOrderedAscending : NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    // A large media cell can make visual-Y matching cross a neighboring post.
+    // Collection section/item order remains stable while cells resize.
+    for (UICollectionViewCell *cell in cells) {
+        NSIndexPath *index = [collection indexPathForCell:cell];
+        if (index.section != sourceIndex.section || index.item <= sourceIndex.item) continue;
+        if ([NSStringFromClass(cell.class) containsString:@"BCNFeedItemHeaderCell"]) break;
+        if (TSBIsFooterCell(cell)) return cell;
+    }
+    return nil;
 }
 
 static BOOL TSBVisibleInFooter(UIView *view, UIView *footer) {
