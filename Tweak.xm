@@ -75,10 +75,12 @@ static BOOL TSBShowBadge(void) {
 
 // Preserve the native spoiler model and hierarchy so badges and previews
 // remain available. Suppress only the concrete spoiler overlay's opacity.
+static BOOL TSBHasNativeMaskPresentation(UIView *view);
 static void TSBApplySpoilerPresentation(UIView *view) {
     if (!view) return;
     BOOL preview = [objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue];
     if (!preview && ![objc_getAssociatedObject(view, &TSBActiveSpoilerKey) boolValue]) return;
+    BOOL hasEffectMask = TSBHasNativeMaskPresentation(view);
     NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:view];
     while (pending.count) {
         UIView *candidate = pending.lastObject;
@@ -86,6 +88,13 @@ static void TSBApplySpoilerPresentation(UIView *view) {
         NSString *name = NSStringFromClass(candidate.class);
         BOOL mask = [candidate isKindOfClass:UIVisualEffectView.class] ||
             [name containsString:@"SpoilerMask"] || [name containsString:@"VisualEffectBackdrop"];
+        // Threads places a plain UIView beside the visual-effect backdrop in
+        // the spoiler overlay. It is the opaque part of the same mask, not a
+        // post content view. Limit this fallback to direct children of a
+        // BCNSpoilerView that already has the native effect mask.
+        BOOL siblingOverlay = hasEffectMask && candidate != view &&
+            candidate.superview == view && [name isEqualToString:@"UIView"];
+        mask = mask || siblingOverlay;
         if (mask) {
             NSNumber *requested = objc_getAssociatedObject(candidate, &TSBMaskRequestedAlphaKey);
             if (!requested) {
