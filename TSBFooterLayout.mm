@@ -107,17 +107,29 @@ BOOL TSBLayoutFooterBadge(UICollectionViewCell *footer, UIView *share, UIButton 
         [pending removeLastObject];
         if (view.hidden || view.alpha < 0.01 || view == badge) continue;
         NSString *name = NSStringFromClass(view.class);
-        BOOL content = view == share || [name containsString:@"BCNUFIButton"] ||
-            [view isKindOfClass:UIControl.class] || [view isKindOfClass:UILabel.class] ||
-            [view isKindOfClass:UIImageView.class] || [view isKindOfClass:UITextView.class];
+        BOOL namedButton = [name containsString:@"BCNUFIButton"];
+        NSString *identifier = view.accessibilityIdentifier ?: @"";
+        NSString *label = view.accessibilityLabel ?: @"";
+        CGRect rect = [view convertRect:view.bounds toView:footer];
+        // The screenshot confirms the native UFI has a large empty trailing
+        // region. Ignore decorative/full-row image views and containers; they
+        // do not occupy interactive layout space. Count only compact controls
+        // and visible count labels.
+        BOOL compactControl = ([view isKindOfClass:UIControl.class] || namedButton) &&
+            (!identifier.length || ![identifier isEqualToString:@"ThreadsNoSpoilerBadge"]) &&
+            rect.size.width > 0 && rect.size.width <= 96.0 &&
+            rect.size.height > 0 && rect.size.height <= CGRectGetHeight(footer.bounds) + 8.0;
+        BOOL countLabel = [view isKindOfClass:UILabel.class] &&
+            (((UILabel *)view).text.length || label.length) && rect.size.width <= 96.0;
+        BOOL content = view == share || compactControl || countLabel;
         if (content) {
-            CGRect rect = [view convertRect:view.bounds toView:footer];
             if (!CGRectIsEmpty(rect)) {
                 TSBFooterRect item = {rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
                 obstacles.push_back(item);
                 if (view != share && ![view isDescendantOfView:share]) movableObstacles.push_back(item);
             }
-        } else {
+        }
+        if (!content || ![view isKindOfClass:UIControl.class]) {
             [pending addObjectsFromArray:view.subviews];
         }
     }

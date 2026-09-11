@@ -24,6 +24,9 @@ share/send accessibility descriptions. Its final fallback is the rightmost
   to remain on screen.
 - Align the badge to the action row's trailing edge with an 8-point margin, on
   the share button's vertical centerline. Keep at least 6 points after share.
+- Treat only compact interactive controls and visible count labels as occupied
+  space. Ignore decorative images and full-row containers; the supplied device
+  screenshot shows these may cover the empty trailing region geometrically.
 - Fit only the badge to remaining space; avoid existing controls and labels.
   No transforms or frames of native components are changed, and no rows are added.
 - Attach the badge directly to the footer for native hit testing. Press/release
