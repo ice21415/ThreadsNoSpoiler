@@ -3,9 +3,26 @@
 #import <objc/message.h>
 #include <vector>
 
+@interface TSBFooterShareState : NSObject
+@property (nonatomic, weak) UIView *share;
+@property (nonatomic) CGPoint originalCenter;
+@property (nonatomic) CGPoint appliedCenter;
+@end
+@implementation TSBFooterShareState
+@end
+static char TSBFooterShareStateKey;
+
 BOOL TSBIsFooterCell(UIView *view) {
     return [view isKindOfClass:UICollectionViewCell.class] &&
-        [NSStringFromClass(view.class) isEqualToString:@"BCNFeedItemUFICell.BCNFeedItemUFICell"];
+        [NSStringFromClass(view.class) containsString:@"BCNFeedItemUFICell"];
+}
+
+void TSBRestoreFooterShare(UICollectionViewCell *footer) {
+    TSBFooterShareState *state = objc_getAssociatedObject(footer, &TSBFooterShareStateKey);
+    if (!state) return;
+    if (state.share && CGPointEqualToPoint(state.share.center, state.appliedCenter))
+        state.share.center = state.originalCenter;
+    objc_setAssociatedObject(footer, &TSBFooterShareStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 UICollectionViewCell *TSBFooterForFeedCell(UICollectionViewCell *source) {
@@ -18,7 +35,7 @@ UICollectionViewCell *TSBFooterForFeedCell(UICollectionViewCell *source) {
     for (UICollectionViewCell *cell in collection.visibleCells) {
         NSIndexPath *index = [collection indexPathForCell:cell];
         if (!index) continue;
-        BOOL header = [NSStringFromClass(cell.class) isEqualToString:@"BCNFeedItemHeaderCell.BCNFeedItemHeaderCell"];
+        BOOL header = [NSStringFromClass(cell.class) containsString:@"BCNFeedItemHeaderCell"];
         rows.push_back({(long)index.section, (long)index.item, (bool)header, (bool)TSBIsFooterCell(cell)});
         [cells addObject:cell];
     }
@@ -50,7 +67,7 @@ UIView *TSBFooterShareButton(UICollectionViewCell *footer) {
         NSString *className = NSStringFromClass(view.class);
         // Use observed selector names only on the UFI container, never KVC on
         // arbitrary views. The return type must be an Objective-C object.
-        if ([className isEqualToString:@"BCNUFI.BCNUFIView"] || view == footer) {
+        if ([className containsString:@"BCNUFIView"] || view == footer) {
             for (NSString *getter in @[@"shareButton", @"sendButton"]) {
                 SEL selector = NSSelectorFromString(getter);
                 if (![view respondsToSelector:selector]) continue;
@@ -60,7 +77,7 @@ UIView *TSBFooterShareButton(UICollectionViewCell *footer) {
                 if ([value isKindOfClass:UIView.class] && TSBVisibleInFooter(value, footer)) return value;
             }
         }
-        BOOL nativeButton = [className isEqualToString:@"BCNUFI.BCNUFIButton"];
+        BOOL nativeButton = [className containsString:@"BCNUFIButton"];
         if (!nativeButton && ![view isKindOfClass:UIControl.class]) continue;
         NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
         NSString *label = view.accessibilityLabel.lowercaseString ?: @"";
@@ -80,20 +97,26 @@ UIView *TSBFooterShareButton(UICollectionViewCell *footer) {
 }
 
 BOOL TSBLayoutFooterBadge(UICollectionViewCell *footer, UIView *share, UIButton *badge) {
+    TSBRestoreFooterShare(footer);
     if (!TSBVisibleInFooter(share, footer)) return NO;
     std::vector<TSBFooterRect> obstacles;
+    std::vector<TSBFooterRect> movableObstacles;
     NSMutableArray<UIView *> *pending = [footer.subviews mutableCopy];
     while (pending.count) {
         UIView *view = pending.lastObject;
         [pending removeLastObject];
         if (view.hidden || view.alpha < 0.01 || view == badge) continue;
         NSString *name = NSStringFromClass(view.class);
-        BOOL content = view == share || [name isEqualToString:@"BCNUFI.BCNUFIButton"] ||
+        BOOL content = view == share || [name containsString:@"BCNUFIButton"] ||
             [view isKindOfClass:UIControl.class] || [view isKindOfClass:UILabel.class] ||
             [view isKindOfClass:UIImageView.class] || [view isKindOfClass:UITextView.class];
         if (content) {
             CGRect rect = [view convertRect:view.bounds toView:footer];
-            if (!CGRectIsEmpty(rect)) obstacles.push_back({rect.origin.x, rect.origin.y, rect.size.width, rect.size.height});
+            if (!CGRectIsEmpty(rect)) {
+                TSBFooterRect item = {rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
+                obstacles.push_back(item);
+                if (view != share && ![view isDescendantOfView:share]) movableObstacles.push_back(item);
+            }
         } else {
             [pending addObjectsFromArray:view.subviews];
         }
@@ -101,9 +124,26 @@ BOOL TSBLayoutFooterBadge(UICollectionViewCell *footer, UIView *share, UIButton 
     CGRect bounds = footer.bounds;
     CGRect anchor = [share convertRect:share.bounds toView:footer];
     TSBFooterRect frame;
-    if (!TSBFindFooterBadge({bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height},
-        {anchor.origin.x, anchor.origin.y, anchor.size.width, anchor.size.height},
-        obstacles.data(), obstacles.size(), &frame)) return NO;
+    TSBFooterRect footerRect = {bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height};
+    TSBFooterRect shareRect = {anchor.origin.x, anchor.origin.y, anchor.size.width, anchor.size.height};
+    BOOL moved = NO;
+    TSBFooterRect movedShare;
+    if (!TSBFindFooterBadge(footerRect,
+        shareRect, obstacles.data(), obstacles.size(), &frame)) {
+        moved = TSBFindFooterBadgeMovingShare(footerRect, shareRect,
+            movableObstacles.data(), movableObstacles.size(), &movedShare, &frame);
+        if (!moved) return NO;
+    }
+    if (moved) {
+        TSBFooterShareState *state = [TSBFooterShareState new];
+        state.share = share;
+        state.originalCenter = share.center;
+        CGPoint target = [footer convertPoint:CGPointMake(movedShare.x + movedShare.width / 2.0,
+            movedShare.y + movedShare.height / 2.0) toView:share.superview];
+        [UIView performWithoutAnimation:^{ share.center = target; }];
+        state.appliedCenter = share.center;
+        objc_setAssociatedObject(footer, &TSBFooterShareStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     if (badge.superview != footer) [footer addSubview:badge];
     badge.titleLabel.font = [UIFont systemFontOfSize:frame.width < 30 ? 10 : 11 weight:UIFontWeightSemibold];
     badge.titleLabel.adjustsFontSizeToFitWidth = YES;

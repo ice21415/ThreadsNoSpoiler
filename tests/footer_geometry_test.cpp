@@ -26,6 +26,13 @@ int main() {
     assert(badge.width == 26);
     TSBFooterRect occupied[] = {share, {286, 0, 30, 44}};
     assert(!TSBFindFooterBadge(narrow, share, occupied, 2, &badge));
+    TSBFooterRect movedShare;
+    assert(TSBFindFooterBadgeMovingShare(narrow, share, nullptr, 0, &movedShare, &badge));
+    assert(badge.x + badge.width == 312);
+    assert(movedShare.x + movedShare.width + 6 == badge.x);
+    assert(!TSBFooterIntersects(movedShare, badge));
+    TSBFooterRect priorControl = {movedShare.x - 20, 0, 30, 44};
+    assert(!TSBFindFooterBadgeMovingShare(narrow, share, &priorControl, 1, &movedShare, &badge));
     // Unordered visible cells, adjacent posts, other sections and missing footer.
     TSBFeedRow rows[] = {{0, 12, false, true}, {0, 8, true, false},
                         {0, 5, false, true}, {1, 5, false, true}, {0, 1, true, false}};

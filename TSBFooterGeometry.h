@@ -43,3 +43,26 @@ static inline bool TSBFindFooterBadge(TSBFooterRect footer, TSBFooterRect share,
     }
     return false;
 }
+
+static inline bool TSBFindFooterBadgeMovingShare(TSBFooterRect footer, TSBFooterRect share,
+                                                 const TSBFooterRect *obstacles, size_t count,
+                                                 TSBFooterRect *movedShare, TSBFooterRect *result) {
+    const double widths[] = {36, 30, 26};
+    for (double width : widths) {
+        double height = std::min(width >= 36 ? 28.0 : 24.0, footer.height - 4.0);
+        TSBFooterRect badge = {footer.x + footer.width - 8.0 - width,
+            std::max(footer.y + 2.0, std::min(share.y + (share.height - height) / 2.0,
+                     footer.y + footer.height - 2.0 - height)), width, height};
+        TSBFooterRect shifted = {badge.x - 6.0 - share.width, share.y, share.width, share.height};
+        if (!TSBFooterContains(footer, badge) || !TSBFooterContains(footer, shifted)) continue;
+        bool blocked = false;
+        TSBFooterRect paddedShare = {shifted.x - 2, shifted.y, shifted.width + 4, shifted.height};
+        TSBFooterRect paddedBadge = {badge.x - 2, badge.y - 2, badge.width + 4, badge.height + 4};
+        for (size_t i = 0; i < count; ++i) {
+            if (TSBFooterIntersects(paddedShare, obstacles[i]) ||
+                TSBFooterIntersects(paddedBadge, obstacles[i])) { blocked = true; break; }
+        }
+        if (!blocked) { *movedShare = shifted; *result = badge; return true; }
+    }
+    return false;
+}

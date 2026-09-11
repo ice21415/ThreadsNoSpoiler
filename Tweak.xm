@@ -177,6 +177,7 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
 }
 
 static void TSBClearFooterCell(UICollectionViewCell *cell) {
+    TSBRestoreFooterShare(cell);
     NSHashTable *owners = objc_getAssociatedObject(cell, &TSBBadgeOwnerKey);
     UIButton *badge = objc_getAssociatedObject(cell, &TSBBadgeKey);
     [badge sendActionsForControlEvents:UIControlEventTouchCancel];
@@ -199,6 +200,7 @@ static void TSBRefreshFooterCell(UICollectionViewCell *cell) {
 }
 
 static void TSBHookedFooterLayoutSubviews(UICollectionViewCell *self, SEL cmd) {
+    TSBRestoreFooterShare(self);
     TSBOriginalFooterLayoutSubviews(self, cmd);
     TSBRefreshFooterCell(self);
 }
@@ -615,14 +617,21 @@ static void TSBInstallSpoilerHooks(void) {
 }
 
 static void TSBInstallFooterHooks(void) {
-    Class cls = NSClassFromString(@"BCNFeedItemUFICell.BCNFeedItemUFICell");
-    NSString *name = cls ? NSStringFromClass(cls) : nil;
-    if (!cls || [TSBFooterHookedClasses containsObject:name]) return;
-    MSHookMessageEx(cls, @selector(layoutSubviews), (IMP)TSBHookedFooterLayoutSubviews,
-                    (IMP *)&TSBOriginalFooterLayoutSubviews);
-    MSHookMessageEx(cls, @selector(prepareForReuse), (IMP)TSBHookedFooterPrepareForReuse,
-                    (IMP *)&TSBOriginalFooterPrepareForReuse);
-    [TSBFooterHookedClasses addObject:name];
+    int classCount = objc_getClassList(NULL, 0);
+    __unsafe_unretained Class *classes = (__unsafe_unretained Class *)calloc((size_t)classCount, sizeof(Class));
+    classCount = objc_getClassList(classes, classCount);
+    for (int index = 0; index < classCount; index++) {
+        Class cls = classes[index];
+        NSString *name = NSStringFromClass(cls);
+        if (![name containsString:@"BCNFeedItemUFICell"] || [TSBFooterHookedClasses containsObject:name]) continue;
+        MSHookMessageEx(cls, @selector(layoutSubviews), (IMP)TSBHookedFooterLayoutSubviews,
+                        (IMP *)&TSBOriginalFooterLayoutSubviews);
+        MSHookMessageEx(cls, @selector(prepareForReuse), (IMP)TSBHookedFooterPrepareForReuse,
+                        (IMP *)&TSBOriginalFooterPrepareForReuse);
+        [TSBFooterHookedClasses addObject:name];
+        break;
+    }
+    free(classes);
 }
 
 %ctor {
