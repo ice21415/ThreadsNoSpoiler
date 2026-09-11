@@ -474,7 +474,8 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     }
     [owners addObject:spoilerView];
     CGRect anchorFrame = [timestamp convertRect:timestamp.bounds toView:header];
-    CGSize size = CGSizeMake(MAX(44.0, ceil(badge.bounds.size.width)), 32.0);
+    // Start at the preferred size on every layout, so compact badges can grow again.
+    CGSize size = CGSizeMake(44.0, 32.0);
     UIView *metadata = TSBHeaderMetadataTextView(header);
     // Detail headers may have no local menu. Reserve a trailing slot rather
     // than treating the title or the Threads logo as a menu anchor.
@@ -512,10 +513,23 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     // this rectangle could cover a sibling text/media cell, even if the header
     // itself has no obstacle at that position.
     CGRect available = CGRectInset(header.bounds, 4.0, 2.0);
-    NSMutableArray<NSValue *> *candidates = [NSMutableArray arrayWithObject:[NSValue valueWithCGRect:targetFrame]];
+    BOOL found = NO;
+    CGFloat bestOverlap = CGFLOAT_MAX;
+    CGFloat bestDistance = CGFLOAT_MAX;
+    CGRect fallbackFrame = targetFrame;
+    const CGSize sizes[] = {{44.0, 32.0}, {36.0, 28.0}, {28.0, 24.0}};
+    for (NSUInteger sizeIndex = 0; sizeIndex < sizeof(sizes) / sizeof(sizes[0]); sizeIndex++) {
+    size = sizes[sizeIndex];
+    size.width = MIN(size.width, MAX(1.0, CGRectGetWidth(available)));
+    size.height = MIN(size.height, MAX(1.0, CGRectGetHeight(available)));
+    CGFloat preferredX = follow ? x + (44.0 - size.width) / 2.0 : trailing - size.width;
+    CGFloat preferredY = follow ? y : round(CGRectGetMidY(anchorFrame) - size.height / 2.0);
+    CGRect preferredFrame = CGRectMake(preferredX, preferredY, size.width, size.height);
+    NSMutableArray<NSValue *> *candidates = [NSMutableArray arrayWithObject:[NSValue valueWithCGRect:preferredFrame]];
     // Prefer below the requested anchor, then other free gaps in this header.
-    NSMutableArray<NSNumber *> *rows = [NSMutableArray arrayWithObjects:@(y), @(CGRectGetMinY(available)), nil];
-    NSMutableArray<NSNumber *> *columns = [NSMutableArray arrayWithObjects:@(x),
+    NSMutableArray<NSNumber *> *rows = [NSMutableArray arrayWithObjects:@(preferredY), @(CGRectGetMinY(available)),
+        @(CGRectGetMaxY(available) - size.height), nil];
+    NSMutableArray<NSNumber *> *columns = [NSMutableArray arrayWithObjects:@(preferredX),
         @(CGRectGetMaxX(available) - size.width), @(CGRectGetMinX(available)), nil];
     for (NSValue *value in obstacles) {
         CGRect frame = value.CGRectValue;
@@ -531,34 +545,46 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
                 row.doubleValue, size.width, size.height)]];
         }
     }
-    BOOL found = NO;
     for (NSValue *candidate in candidates) {
         CGRect frame = candidate.CGRectValue;
-        if (!CGRectContainsRect(available, frame)) continue;
-        BOOL blocked = NO;
+        frame.origin.x = MAX(CGRectGetMinX(available), MIN(frame.origin.x, CGRectGetMaxX(available) - size.width));
+        frame.origin.y = MAX(CGRectGetMinY(available), MIN(frame.origin.y, CGRectGetMaxY(available) - size.height));
+        CGFloat overlap = 0.0;
         for (NSValue *obstacle in obstacles) {
-            if (CGRectIntersectsRect(CGRectInset(frame, -4.0, -2.0), obstacle.CGRectValue)) {
-                blocked = YES;
-                break;
+            CGRect intersection = CGRectIntersection(CGRectInset(frame, -2.0, -1.0), obstacle.CGRectValue);
+            if (!CGRectIsNull(intersection) && !CGRectIsEmpty(intersection)) {
+                overlap += CGRectGetWidth(intersection) * CGRectGetHeight(intersection);
             }
         }
-        if (!blocked) {
+        CGFloat distance = fabs(CGRectGetMidX(frame) - CGRectGetMidX(preferredFrame)) +
+            fabs(CGRectGetMidY(frame) - CGRectGetMidY(preferredFrame));
+        if (overlap < bestOverlap || (overlap == bestOverlap && distance < bestDistance)) {
+            bestOverlap = overlap;
+            bestDistance = distance;
+            fallbackFrame = frame;
+        }
+        if (overlap == 0.0) {
             targetFrame = frame;
             found = YES;
             break;
         }
     }
-    if (!found) {
-        // Preserve native geometry if there is no safe full-size slot.
-        // Re-evaluate when header content or available width changes.
-        badge.hidden = YES;
-        return;
+    if (found) break;
     }
+    if (!found) {
+        // Keep the action available even when native content fills the header.
+        targetFrame = fallbackFrame;
+    }
+    badge.titleLabel.font = [UIFont systemFontOfSize:targetFrame.size.width < 36.0 ? 10.0 : 11.0
+                                            weight:UIFontWeightSemibold];
+    badge.titleLabel.adjustsFontSizeToFitWidth = YES;
+    badge.titleLabel.minimumScaleFactor = 0.8;
     if (!CGRectEqualToRect(badge.frame, targetFrame)) {
         badge.frame = targetFrame;
     }
     objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     badge.hidden = NO;
+    [header bringSubviewToFront:badge];
 }
 
 static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
