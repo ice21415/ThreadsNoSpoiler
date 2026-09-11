@@ -10,6 +10,7 @@ static NSString * const TSBShowBadgeKey = @"TSBShowSpoilerBadge";
 static char TSBSettingsButtonKey;
 static char TSBBadgeKey;
 static char TSBBadgeStatusKey;
+static char TSBLastResolutionKey;
 static char TSBBadgeAnchorKey;
 static char TSBRemovalAnimationPlayedKey;
 static char TSBVisibleSampleCountKey;
@@ -22,6 +23,7 @@ static NSHashTable<UIView *> *TSBPendingSpoilerViews;
 static NSHashTable<UIView *> *TSBTrackedSpoilerViews;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 static NSMutableOrderedSet<NSString *> *TSBLastSpoilerContext;
+static NSMutableArray<NSString *> *TSBLifecycleEvents;
 static NSMutableSet<NSString *> *TSBFooterHookedClasses;
 static void (*TSBOriginalFooterLayoutSubviews)(id, SEL);
 static void (*TSBOriginalFooterPrepareForReuse)(id, SEL);
@@ -84,7 +86,14 @@ static void TSBHookedSetAlpha(UIView *self, SEL _cmd, CGFloat alpha) {
 }
 
 static void TSBLog(NSString *format, ...) {
-    (void)format;
+    if (!TSBLifecycleEvents) TSBLifecycleEvents = [NSMutableArray array];
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    [TSBLifecycleEvents addObject:[NSString stringWithFormat:@"%.3f %@",
+        NSProcessInfo.processInfo.systemUptime, message]];
+    if (TSBLifecycleEvents.count > 250) [TSBLifecycleEvents removeObjectAtIndex:0];
 }
 
 static void TSBRecordView(UIView *view) {
@@ -118,13 +127,19 @@ static UIView *TSBPostContainer(UIView *view) {
 }
 
 static UICollectionViewCell *TSBOuterFeedCell(UIView *view) {
+    UICollectionViewCell *fallback = nil;
     for (NSUInteger depth = 0; view && depth < 30; depth++, view = view.superview) {
+        if ([view isKindOfClass:UICollectionViewCell.class] &&
+            [view.superview isKindOfClass:UICollectionView.class]) {
+            // Detail screens may use a different collection subclass.
+            fallback = (UICollectionViewCell *)view;
+        }
         if ([view isKindOfClass:UICollectionViewCell.class] &&
             [NSStringFromClass(view.superview.class) containsString:@"BCNFeedCollectionView"]) {
             return (UICollectionViewCell *)view;
         }
     }
-    return nil;
+    return fallback;
 }
 
 static void TSBAppendHeaderTree(UIView *view, NSUInteger depth) {
@@ -151,6 +166,18 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
                 if (TSBLastSpoilerContext.count >= 120) break;
                 [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"collection[%lu] cell %@ (children: %lu)",
                     (unsigned long)depth, NSStringFromClass(cell.class), (unsigned long)cell.subviews.count]];
+                // Record field names/types, never read model values or post text.
+                for (Class cls = cell.class; cls && cls != UICollectionViewCell.class;
+                     cls = class_getSuperclass(cls)) {
+                    unsigned int count = 0;
+                    Ivar *ivars = class_copyIvarList(cls, &count);
+                    for (unsigned int i = 0; i < count && TSBLastSpoilerContext.count < 100; i++) {
+                        const char *type = ivar_getTypeEncoding(ivars[i]);
+                        [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"  field %@.%s type:%s",
+                            NSStringFromClass(cls), ivar_getName(ivars[i]), type ?: "?"]];
+                    }
+                    free(ivars);
+                }
                 for (UIView *child in cell.subviews) {
                     if (TSBLastSpoilerContext.count >= 120) break;
                     [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"  cell-child %@ (children: %lu)",
@@ -181,6 +208,8 @@ static void TSBClearFooterCell(UICollectionViewCell *cell) {
     TSBRestoreFooterShare(cell);
     NSHashTable *owners = objc_getAssociatedObject(cell, &TSBBadgeOwnerKey);
     UIButton *badge = objc_getAssociatedObject(cell, &TSBBadgeKey);
+    if (badge) TSBLog(@"clear footer=%p class=%@ window=%d owners=%lu", cell,
+        NSStringFromClass(cell.class), cell.window != nil, (unsigned long)owners.count);
     [badge sendActionsForControlEvents:UIControlEventTouchCancel];
     for (UIView *owner in owners.allObjects) {
         UIView *anchor = objc_getAssociatedObject(owner, &TSBBadgeAnchorKey);
@@ -223,6 +252,7 @@ static void TSBHookedCollectionCellPrepareForReuse(UICollectionViewCell *self, S
     // explicitly recycles the cell, including source cells and embedded UFI.
     for (UIView *owner in TSBTrackedSpoilerViews.allObjects) {
         if (![owner isDescendantOfView:self]) continue;
+        TSBLog(@"reuse source=%p class=%@ spoiler=%p", self, NSStringFromClass(self.class), owner);
         TSBClearSpoilerBadge(owner);
         if ([objc_getAssociatedObject(owner, &TSBRemovalAnimationPlayedKey) boolValue])
             TSBOriginalSetHidden(owner, @selector(setHidden:), NO);
@@ -236,19 +266,25 @@ static void TSBHookedCollectionCellPrepareForReuse(UICollectionViewCell *self, S
 }
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
-    if (!spoilerView.window || !TSBEnabled() || !TSBShowBadge() ||
-        ![objc_getAssociatedObject(spoilerView, &TSBActiveSpoilerKey) boolValue] ||
-        spoilerView.bounds.size.width < 4 || spoilerView.bounds.size.height < 4) {
+    if (!TSBEnabled() || !TSBShowBadge() ||
+        ![objc_getAssociatedObject(spoilerView, &TSBActiveSpoilerKey) boolValue]) {
         TSBClearSpoilerBadge(spoilerView);
         return;
     }
+    // Temporary detachment/zero-size layout of the text does not invalidate
+    // an existing footer. Actual reuse and footer removal still clear it.
+    if (!spoilerView.window || spoilerView.bounds.size.width < 4 ||
+        spoilerView.bounds.size.height < 4) return;
     UICollectionViewCell *source = TSBOuterFeedCell(spoilerView);
     UICollectionViewCell *footer = source ? TSBFooterForFeedCell(source) : nil;
     UIView *share = footer ? TSBFooterShareButton(footer) : nil;
-    if (objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != share)
+    if (share && objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != share)
         TSBClearSpoilerBadge(spoilerView);
     NSString *status = !source ? @"no source feed cell" : !footer ? @"waiting for this post's footer" :
         !share ? @"waiting for visible share button" : @"footer share anchor resolved";
+    if (![objc_getAssociatedObject(spoilerView, &TSBLastResolutionKey) isEqual:status])
+        TSBLog(@"resolve spoiler=%p source=%p footer=%p share=%p %@", spoilerView, source, footer, share, status);
+    objc_setAssociatedObject(spoilerView, &TSBLastResolutionKey, status, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(spoilerView, &TSBBadgeStatusKey, status, OBJC_ASSOCIATION_COPY_NONATOMIC);
     if (share) TSBPlaceSpoilerBadge(spoilerView, share);
 }
@@ -414,7 +450,9 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     TSBOriginalDidMoveToWindow(self, _cmd);
     TSBApplySpoilerPresentation(self);
     if (self.window == nil) {
-        TSBClearSpoilerBadge(self);
+        TSBLog(@"detach spoiler=%p active=%d anchor=%p", self,
+            [objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue],
+            objc_getAssociatedObject(self, &TSBBadgeAnchorKey));
         objc_setAssociatedObject(self, &TSBVisibleSampleCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &TSBLastVisibleFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [TSBPendingSpoilerViews removeObject:self];
@@ -537,6 +575,22 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     [self.tableView registerClass:UITableViewCell.class forCellReuseIdentifier:@"SettingCell"];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"匯出診斷" style:UIBarButtonItemStylePlain
+        target:self action:@selector(tsb_exportDiagnostics:)];
+}
+
+- (void)tsb_exportDiagnostics:(id)sender {
+    NSString *report = [NSString stringWithFormat:
+        @"ThreadsNoSpoiler 0.1.50\nApp: %@\n\nLifecycle\n%@\n\nLast source hierarchy\n%@\n\nObserved classes\n%@",
+        [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],
+        [TSBLifecycleEvents componentsJoinedByString:@"\n"],
+        [TSBLastSpoilerContext.array componentsJoinedByString:@"\n"],
+        [TSBObservedViewClasses.array componentsJoinedByString:@"\n"]];
+    UIActivityViewController *share = [[UIActivityViewController alloc]
+        initWithActivityItems:@[report] applicationActivities:nil];
+    share.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
+    [self presentViewController:share animated:YES completion:nil];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
