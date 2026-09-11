@@ -2,7 +2,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <substrate.h>
-#import "TSBAdaptiveLayout.h"
+#import "TSBFooterLayout.h"
 
 static NSString * const TSBEnabledKey = @"TSBEnabled";
 static NSString * const TSBForceHideContainerKey = @"TSBForceHideContainer";
@@ -11,7 +11,6 @@ static char TSBSettingsButtonKey;
 static char TSBBadgeKey;
 static char TSBBadgeStatusKey;
 static char TSBBadgeAnchorKey;
-static char TSBPostTimestampKey;
 static char TSBRemovalAnimationPlayedKey;
 static char TSBVisibleSampleCountKey;
 static char TSBLastVisibleFrameKey;
@@ -23,36 +22,15 @@ static NSHashTable<UIView *> *TSBPendingSpoilerViews;
 static NSHashTable<UIView *> *TSBTrackedSpoilerViews;
 static NSMutableOrderedSet<NSString *> *TSBObservedViewClasses;
 static NSMutableOrderedSet<NSString *> *TSBLastSpoilerContext;
-static NSMutableSet<NSString *> *TSBTimestampHookedClasses;
-static NSMutableDictionary<NSString *, NSValue *> *TSBTimestampGetterIMPs;
-static NSMutableSet<NSString *> *TSBHeaderHookedClasses;
-static void (*TSBOriginalHeaderLayoutSubviews)(id, SEL);
-static UIView *(*TSBOriginalCollectionHitTest)(id, SEL, CGPoint, UIEvent *);
-
-static UIView *TSBHookedCollectionHitTest(UICollectionView *self, SEL selector, CGPoint point, UIEvent *event) {
-    UIView *original = TSBOriginalCollectionHitTest(self, selector, point, event);
-    if (!original || ![NSStringFromClass(self.class) containsString:@"BCNFeedCollectionView"] ||
-        !CGRectContainsPoint(self.bounds, point)) return original;
-    // Route compact menu hits through its retained native ancestry. Its parent
-    // may be narrower after compaction; both controls stay inside this header.
-    for (UICollectionViewCell *cell in self.visibleCells) {
-        UIView *menuHit = TSBHitTestHeaderMenu(cell, point, self, event);
-        if (menuHit) return menuHit;
-        UIButton *badge = objc_getAssociatedObject(cell, &TSBBadgeKey);
-        if (!badge || badge.hidden || badge.alpha < 0.01 || !badge.enabled ||
-            !badge.userInteractionEnabled || badge.window != self.window ||
-            cell.hidden || cell.alpha < 0.01) continue;
-        CGPoint local = [badge convertPoint:point fromView:self];
-        if (CGRectContainsPoint(badge.bounds, local)) return badge;
-    }
-    return original;
-}
+static NSMutableSet<NSString *> *TSBFooterHookedClasses;
+static void (*TSBOriginalFooterLayoutSubviews)(id, SEL);
+static void (*TSBOriginalFooterPrepareForReuse)(id, SEL);
 static void (*TSBOriginalCollectionCellDidMoveToWindow)(id, SEL);
 static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 static void (*TSBOriginalSetAlpha)(id, SEL, CGFloat);
 static char TSBRequestedAlphaKey;
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
-static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp);
+static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *share);
 static void TSBClearSpoilerBadge(UIView *spoilerView);
 
 static BOOL TSBIsInVisibleViewport(UIView *view) {
@@ -148,35 +126,6 @@ static UICollectionViewCell *TSBOuterFeedCell(UIView *view) {
     return nil;
 }
 
-static UICollectionViewCell *TSBHeaderCellForFeedCell(UICollectionViewCell *feedCell) {
-    UICollectionView *collection = [feedCell.superview isKindOfClass:UICollectionView.class] ? (UICollectionView *)feedCell.superview : nil;
-    NSIndexPath *target = collection ? [collection indexPathForCell:feedCell] : nil;
-    if (!collection || !target) return nil;
-    UICollectionViewCell *nearestHeader = nil;
-    for (UICollectionViewCell *candidate in collection.visibleCells) {
-        if (![NSStringFromClass(candidate.class) isEqualToString:@"BCNFeedItemHeaderCell.BCNFeedItemHeaderCell"]) continue;
-        NSIndexPath *indexPath = [collection indexPathForCell:candidate];
-        if (!indexPath) continue;
-        BOOL isBefore = indexPath.section == target.section && indexPath.item < target.item;
-        if (!isBefore) continue;
-        NSIndexPath *current = nearestHeader ? [collection indexPathForCell:nearestHeader] : nil;
-        if (!current || indexPath.section > current.section ||
-            (indexPath.section == current.section && indexPath.item > current.item)) {
-            nearestHeader = candidate;
-        }
-    }
-    return nearestHeader;
-}
-
-static UICollectionViewCell *TSBHeaderCellContainingView(UIView *view) {
-    for (NSUInteger depth = 0; view && depth < 20; depth++, view = view.superview) {
-        if ([NSStringFromClass(view.class) isEqualToString:@"BCNFeedItemHeaderCell.BCNFeedItemHeaderCell"]) {
-            return (UICollectionViewCell *)view;
-        }
-    }
-    return nil;
-}
-
 static void TSBAppendHeaderTree(UIView *view, NSUInteger depth) {
     if (TSBLastSpoilerContext.count >= 120 || depth > 12) return;
     NSString *indent = [@"" stringByPaddingToLength:depth * 2 withString:@" " startingAtIndex:0];
@@ -206,7 +155,7 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
                     [TSBLastSpoilerContext addObject:[NSString stringWithFormat:@"  cell-child %@ (children: %lu)",
                         NSStringFromClass(child.class), (unsigned long)child.subviews.count]];
                 }
-                if ([NSStringFromClass(cell.class) containsString:@"BCNFeedItemHeaderCell"]) {
+                if ([NSStringFromClass(cell.class) containsString:@"BCNFeedItemHeaderCell"] || TSBIsFooterCell(cell)) {
                     TSBAppendHeaderTree(cell, 0);
                 }
             }
@@ -227,165 +176,78 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
     }
 }
 
-static void TSBRegisterTimestampLabel(UIView *header, UILabel *label) {
-    UICollectionViewCell *headerCell = TSBHeaderCellContainingView(header);
-    if (headerCell && label) {
-        objc_setAssociatedObject(headerCell, &TSBPostTimestampKey, label, OBJC_ASSOCIATION_ASSIGN);
-        TSBLog(@"registered timestamp %@ for %@", NSStringFromClass(header.class), NSStringFromClass(headerCell.class));
-    }
-}
-
-// In this Threads build, author and timestamp are CoreText runs in this exact
-// header component, rather than separate UILabel instances.
-static UIView *TSBHeaderMetadataTextView(UIView *view) {
-    if ([view.accessibilityIdentifier isEqualToString:@"feed-item-header-title"]) {
-        return view;
-    }
-    for (UIView *subview in view.subviews) {
-        UIView *result = TSBHeaderMetadataTextView(subview);
-        if (result) return result;
-    }
-    return nil;
-}
-
-// The bundled Threads binary exposes MoreButtonConfig as part of the feed
-// header layout and an explicit accessibility identifier for the menu.
-static UIView *TSBHeaderMoreButton(UIView *header) {
-    UIView *namedButton = nil;
-    UIView *rightmostButton = nil;
-    CGFloat namedX = -CGFLOAT_MAX;
-    CGFloat rightmostX = -CGFLOAT_MAX;
-    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:header];
-    while (pending.count) {
-        UIView *view = pending.lastObject;
-        [pending removeLastObject];
-        if (view.hidden || view.alpha < 0.01 ||
-            [view.accessibilityIdentifier isEqualToString:@"ThreadsNoSpoilerBadge"]) continue;
-        for (UIView *subview in view.subviews) {
-            [pending addObject:subview];
-        }
-        if ([view.accessibilityIdentifier isEqualToString:@"ThreadsNoSpoilerBadge"]) continue;
-        if (view == header || view.hidden || view.alpha < 0.01 || !view.userInteractionEnabled) continue;
-
-        NSString *className = NSStringFromClass(view.class).lowercaseString;
-        NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
-        if ([identifier isEqualToString:@"feed-item-header-more-button"] &&
-            !CGRectIsEmpty(view.bounds)) return view;
-        NSString *label = view.accessibilityLabel.lowercaseString ?: @"";
-        BOOL looksLikeButton = [view isKindOfClass:UIControl.class] || [className containsString:@"button"];
-        if (!looksLikeButton) continue;
-
-        CGRect frame = [view convertRect:view.bounds toView:header];
-        if (CGRectIsEmpty(frame) || frame.size.width > 72.0 || frame.size.height > 72.0) continue;
-        BOOL namedMoreButton = [className containsString:@"more"] ||
-            [className containsString:@"overflow"] || [className containsString:@"menu"] ||
-            [identifier containsString:@"more"] || [identifier containsString:@"overflow"] ||
-            [identifier containsString:@"menu"] || [label containsString:@"more"] ||
-            [label containsString:@"更多"] || [label containsString:@"選項"];
-        if (namedMoreButton && CGRectGetMaxX(frame) > namedX) {
-            namedButton = view;
-            namedX = CGRectGetMaxX(frame);
-        }
-        if (CGRectGetMidX(frame) > CGRectGetWidth(header.bounds) * 0.60 &&
-            CGRectGetMaxX(frame) > rightmostX) {
-            rightmostButton = view;
-            rightmostX = CGRectGetMaxX(frame);
-        }
-    }
-    // A Threads logo or our own badge is not a post menu.
-    (void)rightmostButton;
-    return namedButton;
-}
-
-
-static void TSBProcessHeaderCell(UIView *self) {
-    UIView *metadataTextView = TSBHeaderMetadataTextView(self);
-    UIView *post = TSBPostContainer(self);
-    if (post && metadataTextView) {
-        objc_setAssociatedObject(self, &TSBPostTimestampKey, metadataTextView, OBJC_ASSOCIATION_ASSIGN);
-    }
-    // Native layout can move the follow control after topic text wraps.
-    NSHashTable *owners = objc_getAssociatedObject(self, &TSBBadgeOwnerKey);
+static void TSBClearFooterCell(UICollectionViewCell *cell) {
+    NSHashTable *owners = objc_getAssociatedObject(cell, &TSBBadgeOwnerKey);
+    UIButton *badge = objc_getAssociatedObject(cell, &TSBBadgeKey);
+    [badge sendActionsForControlEvents:UIControlEventTouchCancel];
     for (UIView *owner in owners.allObjects) {
-        TSBUpdateSpoilerBadge(owner);
+        UIView *anchor = objc_getAssociatedObject(owner, &TSBBadgeAnchorKey);
+        if (TSBOuterFeedCell(anchor) == cell)
+            objc_setAssociatedObject(owner, &TSBBadgeAnchorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [badge removeFromSuperview];
+    objc_setAssociatedObject(cell, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, &TSBBadgeOwnerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void TSBRefreshFooterCell(UICollectionViewCell *cell) {
+    // Footer visibility can begin after the source spoiler's last layout pass.
+    for (UIView *owner in TSBTrackedSpoilerViews.allObjects) {
+        UICollectionViewCell *source = TSBOuterFeedCell(owner);
+        if (source.superview == cell.superview) TSBUpdateSpoilerBadge(owner);
     }
 }
 
-static void TSBHookedHeaderLayoutSubviews(UIView *self, SEL _cmd) {
-    TSBRestoreHeaderLayout(self);
-    TSBOriginalHeaderLayoutSubviews(self, _cmd);
-    TSBProcessHeaderCell(self);
+static void TSBHookedFooterLayoutSubviews(UICollectionViewCell *self, SEL cmd) {
+    TSBOriginalFooterLayoutSubviews(self, cmd);
+    TSBRefreshFooterCell(self);
 }
 
-static void TSBHookedCollectionCellDidMoveToWindow(UICollectionViewCell *self, SEL _cmd) {
-    TSBOriginalCollectionCellDidMoveToWindow(self, _cmd);
-    if ([NSStringFromClass(self.class) isEqualToString:@"BCNFeedItemHeaderCell.BCNFeedItemHeaderCell"]) {
-        if (self.window == nil) {
-            TSBRestoreHeaderLayout(self);
-            UIView *badge = objc_getAssociatedObject(self, &TSBBadgeKey);
-            [badge removeFromSuperview];
-            objc_setAssociatedObject(self, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(self, &TSBBadgeOwnerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            return;
-        }
-        TSBProcessHeaderCell(self);
-    }
+static void TSBHookedFooterPrepareForReuse(UICollectionViewCell *self, SEL cmd) {
+    TSBClearFooterCell(self);
+    TSBOriginalFooterPrepareForReuse(self, cmd);
 }
 
-static IMP TSBOriginalTimestampGetter(id object) {
-    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
-        NSValue *stored = TSBTimestampGetterIMPs[NSStringFromClass(cls)];
-        if (stored) return (IMP)stored.pointerValue;
-    }
-    return NULL;
-}
-
-static id TSBHookedTimestampLabel(id self, SEL _cmd) {
-    IMP original = TSBOriginalTimestampGetter(self);
-    id value = original ? ((id (*)(id, SEL))original)(self, _cmd) : nil;
-    if ([value isKindOfClass:UILabel.class]) {
-        TSBRegisterTimestampLabel(self, value);
-    }
-    return value;
+static void TSBHookedCollectionCellDidMoveToWindow(UICollectionViewCell *self, SEL cmd) {
+    TSBOriginalCollectionCellDidMoveToWindow(self, cmd);
+    if (!TSBIsFooterCell(self)) return;
+    if (!self.window) TSBClearFooterCell(self);
+    else TSBRefreshFooterCell(self);
 }
 
 static void TSBUpdateSpoilerBadge(UIView *spoilerView) {
-    if (!TSBEnabled() || ![objc_getAssociatedObject(spoilerView, &TSBActiveSpoilerKey) boolValue] ||
-        spoilerView.bounds.size.width < 4 || spoilerView.bounds.size.height < 4 ||
-        !TSBIsInVisibleViewport(spoilerView)) {
+    if (!TSBEnabled() || !TSBShowBadge() ||
+        ![objc_getAssociatedObject(spoilerView, &TSBActiveSpoilerKey) boolValue] ||
+        spoilerView.bounds.size.width < 4 || spoilerView.bounds.size.height < 4) {
         TSBClearSpoilerBadge(spoilerView);
         return;
     }
-    UICollectionViewCell *cell = TSBOuterFeedCell(spoilerView);
-    UICollectionViewCell *header = TSBHeaderCellForFeedCell(cell);
-    UIView *moreButton = header ? TSBHeaderMoreButton(header) : nil;
-    UIView *anchor = moreButton ?: (header ? TSBHeaderMetadataTextView(header) : nil);
-    // Drop the previous association before rebinding to a different header.
-    if (objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != anchor) {
+    UICollectionViewCell *source = TSBOuterFeedCell(spoilerView);
+    UICollectionViewCell *footer = source ? TSBFooterForFeedCell(source) : nil;
+    UIView *share = footer && TSBIsInVisibleViewport(footer) ? TSBFooterShareButton(footer) : nil;
+    if (objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey) != share)
         TSBClearSpoilerBadge(spoilerView);
-    }
-    NSString *status = !TSBShowBadge() ? @"disabled in settings" : !cell ? @"no outer feed cell" : !header ? @"no preceding visible header/index path" : !anchor ? @"header more button missing" : (moreButton ? @"more button resolved; placement requested" : @"metadata fallback; placement requested");
+    NSString *status = !source ? @"no source feed cell" : !footer ? @"waiting for this post's footer" :
+        !share ? @"waiting for visible share button" : @"footer share anchor resolved";
     objc_setAssociatedObject(spoilerView, &TSBBadgeStatusKey, status, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    TSBPlaceSpoilerBadge(spoilerView, anchor);
+    if (share) TSBPlaceSpoilerBadge(spoilerView, share);
 }
 
 static void TSBClearSpoilerBadge(UIView *spoilerView) {
     UIView *anchor = objc_getAssociatedObject(spoilerView, &TSBBadgeAnchorKey);
-    UICollectionViewCell *header = TSBHeaderCellContainingView(anchor);
-    NSHashTable *owners = header ? objc_getAssociatedObject(header, &TSBBadgeOwnerKey) : nil;
-    if ([owners containsObject:spoilerView]) [owners removeObject:spoilerView];
-    if (header != nil && owners.count == 0) {
-        TSBRestoreHeaderLayout(header);
-        UIView *badge = objc_getAssociatedObject(header, &TSBBadgeKey);
-        [badge removeFromSuperview];
-        objc_setAssociatedObject(header, &TSBBadgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(header, &TSBBadgeOwnerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UICollectionViewCell *cell = TSBOuterFeedCell(anchor);
+    NSHashTable *owners = cell ? objc_getAssociatedObject(cell, &TSBBadgeOwnerKey) : nil;
+    if ([objc_getAssociatedObject(spoilerView, &TSBPreviewingOriginalKey) boolValue]) {
+        UIButton *badge = objc_getAssociatedObject(cell, &TSBBadgeKey);
+        [badge sendActionsForControlEvents:UIControlEventTouchCancel];
     }
-    objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    if ([owners containsObject:spoilerView]) [owners removeObject:spoilerView];
+    if (cell && owners.count == 0) TSBClearFooterCell(cell);
+    objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 @interface TSBSpoilerBadgeButton : UIButton
-@property (nonatomic, weak) UICollectionViewCell *owningHeader;
+@property (nonatomic, weak) UICollectionViewCell *owningCell;
 - (void)tsb_beginOriginalPreview:(id)sender;
 - (void)tsb_endOriginalPreview:(id)sender;
 @end
@@ -395,7 +257,7 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
     return CGRectInset(contentRect, 3.0, 2.0);
 }
 - (void)tsb_setOriginalPreviewVisible:(BOOL)showingOriginal {
-    NSHashTable<UIView *> *owners = objc_getAssociatedObject(self.owningHeader, &TSBBadgeOwnerKey);
+    NSHashTable<UIView *> *owners = objc_getAssociatedObject(self.owningCell, &TSBBadgeOwnerKey);
     if (showingOriginal) {
         self.alpha = 0.58;
     } else {
@@ -421,56 +283,44 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
 }
 @end
 
-// Direct path used when the header has identified the spoiler in its own
-// following cells. It intentionally bypasses collection-wide lookup.
-static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
-    UICollectionViewCell *header = TSBHeaderCellContainingView(timestamp);
-    TSBSpoilerBadgeButton *badge = header ? objc_getAssociatedObject(header, &TSBBadgeKey) : nil;
-    if (!TSBShowBadge() || !header || !timestamp) {
-        TSBRestoreHeaderLayout(header);
-        [badge removeFromSuperview];
-        return;
-    }
-    UICollectionView *collection = [header.superview isKindOfClass:UICollectionView.class] ?
-        (UICollectionView *)header.superview : nil;
-    NSIndexPath *path = collection ? [collection indexPathForCell:header] : nil;
-    if (!collection || !path) return;
+// One badge per footer, with only that post's spoiler views as preview owners.
+static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *share) {
+    UICollectionViewCell *footer = TSBOuterFeedCell(share);
+    if (!TSBIsFooterCell(footer) || !TSBShowBadge()) return;
+    TSBSpoilerBadgeButton *badge = objc_getAssociatedObject(footer, &TSBBadgeKey);
     if (!badge) {
         badge = [TSBSpoilerBadgeButton buttonWithType:UIButtonTypeCustom];
         [badge setTitle:@"劇透" forState:UIControlStateNormal];
         [badge setTitleColor:UIColor.systemOrangeColor forState:UIControlStateNormal];
         badge.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.16];
-        badge.layer.cornerRadius = 8.0;
+        badge.layer.cornerRadius = 6.0;
         badge.translatesAutoresizingMaskIntoConstraints = YES;
         badge.exclusiveTouch = YES;
         badge.accessibilityIdentifier = @"ThreadsNoSpoilerBadge";
         badge.accessibilityLabel = @"劇透貼文";
         badge.accessibilityHint = @"按住可查看原始防劇透遮罩";
         badge.titleLabel.numberOfLines = 1;
-        badge.titleLabel.lineBreakMode = NSLineBreakByClipping;
         badge.titleLabel.textAlignment = NSTextAlignmentCenter;
-        badge.titleLabel.adjustsFontForContentSizeCategory = NO;
         [badge addTarget:badge action:@selector(tsb_beginOriginalPreview:)
           forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
         [badge addTarget:badge action:@selector(tsb_endOriginalPreview:)
           forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
                            UIControlEventTouchCancel | UIControlEventTouchDragExit];
-        objc_setAssociatedObject(header, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(footer, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    badge.owningHeader = header;
-    NSHashTable *owners = objc_getAssociatedObject(header, &TSBBadgeOwnerKey);
+    badge.owningCell = footer;
+    NSHashTable *owners = objc_getAssociatedObject(footer, &TSBBadgeOwnerKey);
     if (!owners) {
         owners = [NSHashTable weakObjectsHashTable];
-        objc_setAssociatedObject(header, &TSBBadgeOwnerKey, owners, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(footer, &TSBBadgeOwnerKey, owners, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     [owners addObject:spoilerView];
-    objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIView *metadata = TSBHeaderMetadataTextView(header);
-    UIView *menu = timestamp != metadata ? timestamp : nil;
-    BOOL placed = TSBLayoutBadgeInHeader(header, metadata, menu, badge);
-    NSString *status = placed ? @"fixed native header height; adaptive in-header layout" :
-        @"waiting for native header geometry";
-    objc_setAssociatedObject(spoilerView, &TSBBadgeStatusKey, status, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, share, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL placed = TSBLayoutFooterBadge(footer, share, badge);
+    objc_setAssociatedObject(spoilerView, &TSBBadgeStatusKey,
+        placed ? @"footer trailing edge, right of share" : @"waiting for footer trailing space",
+        OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (!placed) [badge removeFromSuperview];
 }
 
 static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
@@ -695,7 +545,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:key];
     [NSUserDefaults.standardUserDefaults synchronize];
     if (!TSBEnabled() || !TSBShowBadge()) {
-        TSBResetAllHeaderLayouts();
+        for (UIView *spoiler in TSBTrackedSpoilerViews.allObjects) TSBClearSpoilerBadge(spoiler);
     }
 }
 
@@ -764,63 +614,15 @@ static void TSBInstallSpoilerHooks(void) {
     free(classes);
 }
 
-static void __attribute__((unused)) TSBInstallTimestampHooks(void) {
-    SEL selector = NSSelectorFromString(@"timestampLabel");
-    int classCount = objc_getClassList(NULL, 0);
-    __unsafe_unretained Class *classes = (__unsafe_unretained Class *)calloc((size_t)classCount, sizeof(Class));
-    classCount = objc_getClassList(classes, classCount);
-    for (int index = 0; index < classCount; index++) {
-        Class cls = classes[index];
-        NSString *name = NSStringFromClass(cls);
-        // Threads sometimes changes the concrete header class. Select by the
-        // actual timestampLabel implementation, never by label contents.
-        BOOL isView = NO;
-        for (Class current = cls; current; current = class_getSuperclass(current)) {
-            if (current == UIView.class) { isView = YES; break; }
-        }
-        if (!isView || ![name containsString:@"BCN"] || [TSBTimestampHookedClasses containsObject:name]) {
-            continue;
-        }
-        unsigned int methodCount = 0;
-        Method *methods = class_copyMethodList(cls, &methodCount);
-        BOOL definesTimestampGetter = NO;
-        for (unsigned int methodIndex = 0; methodIndex < methodCount; methodIndex++) {
-            if (method_getName(methods[methodIndex]) == selector) {
-                definesTimestampGetter = YES;
-                break;
-            }
-        }
-        free(methods);
-        if (!definesTimestampGetter) {
-            continue;
-        }
-        IMP original = NULL;
-        MSHookMessageEx(cls, selector, (IMP)TSBHookedTimestampLabel, &original);
-        if (original) {
-            TSBTimestampGetterIMPs[name] = [NSValue valueWithPointer:(const void *)original];
-            [TSBTimestampHookedClasses addObject:name];
-            TSBLog(@"hooked timestampLabel on %@", name);
-        }
-    }
-    free(classes);
-}
-
-static void TSBInstallHeaderHooks(void) {
-    int classCount = objc_getClassList(NULL, 0);
-    __unsafe_unretained Class *classes = (__unsafe_unretained Class *)calloc((size_t)classCount, sizeof(Class));
-    classCount = objc_getClassList(classes, classCount);
-    for (int index = 0; index < classCount; index++) {
-        Class cls = classes[index];
-        NSString *name = NSStringFromClass(cls);
-        if (![name isEqualToString:@"BCNFeedItemHeaderCell.BCNFeedItemHeaderCell"] || [TSBHeaderHookedClasses containsObject:name]) {
-            continue;
-        }
-        MSHookMessageEx(cls, @selector(layoutSubviews), (IMP)TSBHookedHeaderLayoutSubviews, (IMP *)&TSBOriginalHeaderLayoutSubviews);
-        [TSBHeaderHookedClasses addObject:name];
-        TSBLog(@"hooked header metadata on %@", name);
-        break;
-    }
-    free(classes);
+static void TSBInstallFooterHooks(void) {
+    Class cls = NSClassFromString(@"BCNFeedItemUFICell.BCNFeedItemUFICell");
+    NSString *name = cls ? NSStringFromClass(cls) : nil;
+    if (!cls || [TSBFooterHookedClasses containsObject:name]) return;
+    MSHookMessageEx(cls, @selector(layoutSubviews), (IMP)TSBHookedFooterLayoutSubviews,
+                    (IMP *)&TSBOriginalFooterLayoutSubviews);
+    MSHookMessageEx(cls, @selector(prepareForReuse), (IMP)TSBHookedFooterPrepareForReuse,
+                    (IMP *)&TSBOriginalFooterPrepareForReuse);
+    [TSBFooterHookedClasses addObject:name];
 }
 
 %ctor {
@@ -830,25 +632,20 @@ static void TSBInstallHeaderHooks(void) {
         TSBTrackedSpoilerViews = [NSHashTable weakObjectsHashTable];
         TSBObservedViewClasses = [NSMutableOrderedSet orderedSet];
         TSBLastSpoilerContext = [NSMutableOrderedSet orderedSet];
-        TSBTimestampHookedClasses = [NSMutableSet set];
-        TSBTimestampGetterIMPs = [NSMutableDictionary dictionary];
-        TSBHeaderHookedClasses = [NSMutableSet set];
+        TSBFooterHookedClasses = [NSMutableSet set];
         NSTimer *visibilityTimer = [NSTimer timerWithTimeInterval:0.10 repeats:YES block:^(__unused NSTimer *timer) {
             TSBCheckPendingSpoilers();
         }];
         [NSRunLoop.mainRunLoop addTimer:visibilityTimer forMode:NSRunLoopCommonModes];
         MSHookMessageEx(UIViewController.class, @selector(viewDidAppear:), (IMP)TSBHookedViewDidAppear, (IMP *)&TSBOriginalViewDidAppear);
         MSHookMessageEx(UICollectionViewCell.class, @selector(didMoveToWindow), (IMP)TSBHookedCollectionCellDidMoveToWindow, (IMP *)&TSBOriginalCollectionCellDidMoveToWindow);
-        MSHookMessageEx(UICollectionView.class, @selector(hitTest:withEvent:), (IMP)TSBHookedCollectionHitTest, (IMP *)&TSBOriginalCollectionHitTest);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
-            // Legacy timestamp getter hooks disabled; use the observed title identifier.
-            TSBInstallHeaderHooks();
+            TSBInstallFooterHooks();
         });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             TSBInstallSpoilerHooks();
-            // Legacy timestamp getter hooks disabled; use the observed title identifier.
-            TSBInstallHeaderHooks();
+            TSBInstallFooterHooks();
         });
     }
 }

@@ -31,11 +31,10 @@ The repository script retains previous packages and regenerates the APT indexes 
 
 ## Scope
 
-The adaptive badge layout stays inside the native post header's existing height.
-It uses available space first, then compacts the native header group to leave a
-right-hand lane for the menu and badge. It does not change collection layout
-attributes, cell heights, scroll content size or subsequent post positions.
-See [the header component audit](docs/header-layout-audit.md) for bundle evidence,
+The badge sits at the trailing edge of the native post action row, to the right
+of the paper-plane share button. Header text, icons, transforms, row heights and
+native controls are left unchanged.
+See [the footer placement audit](docs/footer-layout-audit.md) for bundle evidence,
 layout behavior, and outstanding device checks. Run its geometry tests with:
 
 ```powershell
