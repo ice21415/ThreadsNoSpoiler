@@ -33,6 +33,7 @@ static void (*TSBOriginalSetHidden)(id, SEL, BOOL);
 static void (*TSBOriginalSetAlpha)(id, SEL, CGFloat);
 static char TSBRequestedAlphaKey;
 static char TSBNativeMaskSeenKey;
+static char TSBMaskRequestedAlphaKey;
 static char TSBPostIdentifierKey;
 static void TSBUpdateSpoilerBadge(UIView *spoilerView);
 static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *share);
@@ -75,13 +76,29 @@ static BOOL TSBShowBadge(void) {
 // Preserve the native spoiler model and hierarchy so badges and previews
 // remain available. Suppress only the concrete spoiler overlay's opacity.
 static void TSBApplySpoilerPresentation(UIView *view) {
-    if (!TSBOriginalSetAlpha) return;
-    NSNumber *requested = objc_getAssociatedObject(view, &TSBRequestedAlphaKey);
+    if (!view) return;
     BOOL preview = [objc_getAssociatedObject(view, &TSBPreviewingOriginalKey) boolValue];
     if (!preview && ![objc_getAssociatedObject(view, &TSBActiveSpoilerKey) boolValue]) return;
-    CGFloat originalAlpha = requested ? requested.doubleValue : 1.0;
-    CGFloat alpha = preview ? originalAlpha : TSBEnabled() ? 0.0 : originalAlpha;
-    TSBOriginalSetAlpha(view, @selector(setAlpha:), alpha);
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:view];
+    while (pending.count) {
+        UIView *candidate = pending.lastObject;
+        [pending removeLastObject];
+        NSString *name = NSStringFromClass(candidate.class);
+        BOOL mask = [candidate isKindOfClass:UIVisualEffectView.class] ||
+            [name containsString:@"SpoilerMask"] || [name containsString:@"VisualEffectBackdrop"];
+        if (mask) {
+            NSNumber *requested = objc_getAssociatedObject(candidate, &TSBMaskRequestedAlphaKey);
+            if (!requested) {
+                CGFloat current = candidate.alpha;
+                requested = @(current > 0.01 ? current : 1.0);
+                objc_setAssociatedObject(candidate, &TSBMaskRequestedAlphaKey,
+                                         requested, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            CGFloat alpha = preview || !TSBEnabled() ? requested.doubleValue : 0.0;
+            [candidate setAlpha:alpha];
+        }
+        [pending addObjectsFromArray:candidate.subviews];
+    }
 }
 
 static BOOL TSBHasNativeMaskPresentation(UIView *view) {
@@ -95,6 +112,22 @@ static BOOL TSBHasNativeMaskPresentation(UIView *view) {
         [pending addObjectsFromArray:candidate.subviews];
     }
     return NO;
+}
+
+static void TSBResetMaskAlphaState(UIView *view) {
+    if (!view) return;
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:view];
+    while (pending.count) {
+        UIView *candidate = pending.lastObject;
+        [pending removeLastObject];
+        NSString *name = NSStringFromClass(candidate.class);
+        if ([candidate isKindOfClass:UIVisualEffectView.class] ||
+            [name containsString:@"SpoilerMask"] || [name containsString:@"VisualEffectBackdrop"]) {
+            objc_setAssociatedObject(candidate, &TSBMaskRequestedAlphaKey, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        [pending addObjectsFromArray:candidate.subviews];
+    }
 }
 
 static void TSBHookedSetAlpha(UIView *self, SEL _cmd, CGFloat alpha) {
@@ -323,7 +356,10 @@ static void TSBCaptureSpoilerContext(UIView *spoilerView) {
 }
 
 static BOOL TSBProcessSpoilerOwner(UIView *spoilerView) {
-    if (![objc_getAssociatedObject(spoilerView, &TSBNativeMaskSeenKey) boolValue]) return NO;
+    if (![objc_getAssociatedObject(spoilerView, &TSBNativeMaskSeenKey) boolValue] &&
+        !TSBHasNativeMaskPresentation(spoilerView)) return NO;
+    objc_setAssociatedObject(spoilerView, &TSBNativeMaskSeenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(spoilerView, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     TSBApplySpoilerPresentation(spoilerView);
     TSBUpdateSpoilerBadge(spoilerView);
     return YES;
@@ -383,6 +419,7 @@ static void TSBHookedCollectionCellPrepareForReuse(UICollectionViewCell *self, S
         if (![owner isDescendantOfView:self]) continue;
         TSBLog(@"reuse source=%p class=%@ spoiler=%p", self, NSStringFromClass(self.class), owner);
         TSBClearSpoilerBadge(owner);
+        TSBResetMaskAlphaState(owner);
         if ([objc_getAssociatedObject(owner, &TSBRemovalAnimationPlayedKey) boolValue])
             TSBOriginalSetHidden(owner, @selector(setHidden:), NO);
         objc_setAssociatedObject(owner, &TSBActiveSpoilerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -587,7 +624,6 @@ static void TSBHookedDidMoveToWindow(UIView *self, SEL _cmd) {
     }
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         if (![objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue]) {
-            TSBOriginalSetHidden(self, @selector(setHidden:), YES);
             return;
         }
         TSBUpdateSpoilerBadge(self);
@@ -619,7 +655,6 @@ static void TSBHookedLayoutSubviews(UIView *self, SEL _cmd) {
     TSBCaptureSpoilerContext(self);
     if (TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey]) {
         if (![objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue]) {
-            TSBOriginalSetHidden(self, @selector(setHidden:), YES);
             return;
         }
         TSBUpdateSpoilerBadge(self);
@@ -665,6 +700,10 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
     }
     BOOL shouldForceHide = TSBEnabled() && [NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey];
     if (shouldForceHide) {
+        if (![objc_getAssociatedObject(self, &TSBActiveSpoilerKey) boolValue]) {
+            TSBOriginalSetHidden(self, _cmd, hidden);
+            return;
+        }
         if (!hidden) {
             objc_setAssociatedObject(self, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             TSBUpdateSpoilerBadge(self);
@@ -754,6 +793,7 @@ static void TSBHookedSetHidden(UIView *self, SEL _cmd, BOOL hidden) {
         // cause Threads to lay those cells out again, so restore each tracked
         // container immediately and let the safe alpha-based bypass apply.
         for (UIView *spoiler in TSBTrackedSpoilerViews.allObjects) {
+            if (![objc_getAssociatedObject(spoiler, &TSBActiveSpoilerKey) boolValue]) continue;
             [TSBPendingSpoilerViews removeObject:spoiler];
             objc_setAssociatedObject(spoiler, &TSBRemovalAnimationPlayedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             TSBOriginalSetHidden(spoiler, @selector(setHidden:), NO);
