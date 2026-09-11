@@ -247,8 +247,7 @@ static UIView *TSBHeaderMetadataTextView(UIView *view) {
 }
 
 // The bundled Threads binary exposes MoreButtonConfig as part of the feed
-// header layout. Prefer its named control, then use the rightmost compact
-// header button as a resilient fallback when Threads changes its class name.
+// header layout and an explicit accessibility identifier for the menu.
 static UIView *TSBHeaderMoreButton(UIView *header) {
     UIView *namedButton = nil;
     UIView *rightmostButton = nil;
@@ -258,6 +257,8 @@ static UIView *TSBHeaderMoreButton(UIView *header) {
     while (pending.count) {
         UIView *view = pending.lastObject;
         [pending removeLastObject];
+        if (view.hidden || view.alpha < 0.01 ||
+            [view.accessibilityIdentifier isEqualToString:@"ThreadsNoSpoilerBadge"]) continue;
         for (UIView *subview in view.subviews) {
             [pending addObject:subview];
         }
@@ -266,6 +267,8 @@ static UIView *TSBHeaderMoreButton(UIView *header) {
 
         NSString *className = NSStringFromClass(view.class).lowercaseString;
         NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
+        if ([identifier isEqualToString:@"feed-item-header-more-button"] &&
+            !CGRectIsEmpty(view.bounds)) return view;
         NSString *label = view.accessibilityLabel.lowercaseString ?: @"";
         BOOL looksLikeButton = [view isKindOfClass:UIControl.class] || [className containsString:@"button"];
         if (!looksLikeButton) continue;
@@ -400,13 +403,14 @@ static void TSBClearSpoilerBadge(UIView *spoilerView) {
 }
 
 @interface TSBSpoilerBadgeButton : UIButton
+@property (nonatomic, weak) UICollectionViewCell *owningHeader;
 - (void)tsb_beginOriginalPreview:(id)sender;
 - (void)tsb_endOriginalPreview:(id)sender;
 @end
 
 @implementation TSBSpoilerBadgeButton
 - (void)tsb_setOriginalPreviewVisible:(BOOL)showingOriginal {
-    NSHashTable<UIView *> *owners = objc_getAssociatedObject(self.superview, &TSBBadgeOwnerKey);
+    NSHashTable<UIView *> *owners = objc_getAssociatedObject(self.owningHeader, &TSBBadgeOwnerKey);
     if (showingOriginal) {
         self.alpha = 0.58;
     } else {
@@ -441,6 +445,13 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
         [badge removeFromSuperview];
         return;
     }
+    UIView *metadata = TSBHeaderMetadataTextView(header);
+    BOOL hasMenu = timestamp != metadata;
+    UICollectionView *collection = [header.superview isKindOfClass:UICollectionView.class] ?
+        (UICollectionView *)header.superview : nil;
+    // A header can end immediately below the menu. Host the badge in the feed
+    // so its below-menu frame is neither clipped nor covered by the next cell.
+    UIView *badgeHost = hasMenu && collection ? collection : header;
     if (badge == nil) {
         badge = [TSBSpoilerBadgeButton buttonWithType:UIButtonTypeCustom];
         [badge setTitle:@"劇透" forState:UIControlStateNormal];
@@ -460,12 +471,13 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
           forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
                            UIControlEventTouchCancel | UIControlEventTouchDragExit];
         [badge sizeToFit];
-        [header addSubview:badge];
+        [badgeHost addSubview:badge];
         objc_setAssociatedObject(header, &TSBBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (badge.superview != header) {
+    badge.owningHeader = header;
+    if (badge.superview != badgeHost) {
         [badge removeFromSuperview];
-        [header addSubview:badge];
+        [badgeHost addSubview:badge];
     }
     NSHashTable *owners = objc_getAssociatedObject(header, &TSBBadgeOwnerKey);
     if (!owners) {
@@ -476,10 +488,8 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     CGRect anchorFrame = [timestamp convertRect:timestamp.bounds toView:header];
     // Start at the preferred size on every layout, so compact badges can grow again.
     CGSize size = CGSizeMake(44.0, 32.0);
-    UIView *metadata = TSBHeaderMetadataTextView(header);
     // Detail headers may have no local menu. Reserve a trailing slot rather
     // than treating the title or the Threads logo as a menu anchor.
-    BOOL hasMenu = timestamp != metadata;
     CGFloat trailing = hasMenu ? CGRectGetMinX(anchorFrame) - 8.0 : CGRectGetWidth(header.bounds) - 56.0;
     CGFloat x = MAX(8.0, trailing - size.width);
     CGFloat y = round(CGRectGetMidY(anchorFrame) - size.height / 2.0);
@@ -494,10 +504,29 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     // Use actual rendered geometry, including unknown future header controls.
     NSMutableArray<NSValue *> *obstacles = [NSMutableArray array];
     NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:header];
+    CGRect available = CGRectInset(header.bounds, 4.0, 2.0);
+    if (hasMenu) {
+        CGFloat top = CGRectGetMaxY(anchorFrame) + 4.0;
+        CGFloat bottom = MAX(CGRectGetMaxY(available), top + 32.0);
+        available = CGRectMake(CGRectGetMinX(available), top,
+                               CGRectGetWidth(available), bottom - top);
+        // Include neighbouring content: header bounds alone do not describe
+        // the text/media painted below it. Never search down into another post.
+        for (UICollectionViewCell *cell in collection.visibleCells) {
+            if (cell == header || cell.hidden || cell.alpha < 0.01) continue;
+            CGRect frame = [cell convertRect:cell.bounds toView:header];
+            if (CGRectGetMinY(frame) >= top && TSBHeaderMetadataTextView(cell)) {
+                available.size.height = MAX(0.0, MIN(CGRectGetMaxY(available),
+                    CGRectGetMinY(frame) - 2.0) - top);
+            }
+            if (CGRectIntersectsRect(frame, available)) [pending addObject:cell];
+        }
+    }
     while (pending.count) {
         UIView *view = pending.lastObject;
         [pending removeLastObject];
-        if (view.hidden || view.alpha < 0.01 || view == badge) continue;
+        if (view.hidden || view.alpha < 0.01 || view == badge ||
+            [view.accessibilityIdentifier isEqualToString:@"ThreadsNoSpoilerBadge"]) continue;
         BOOL content = view == metadata || [view isKindOfClass:UIControl.class] ||
             [view isKindOfClass:UILabel.class] || [view isKindOfClass:UIImageView.class] ||
             [view isKindOfClass:UITextView.class] ||
@@ -509,21 +538,28 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
             [pending addObjectsFromArray:view.subviews];
         }
     }
-    // Keep the complete touch target inside its owning cell. Moving outside
-    // this rectangle could cover a sibling text/media cell, even if the header
-    // itself has no obstacle at that position.
-    CGRect available = CGRectInset(header.bounds, 4.0, 2.0);
     BOOL found = NO;
     CGFloat bestOverlap = CGFLOAT_MAX;
     CGFloat bestDistance = CGFLOAT_MAX;
     CGRect fallbackFrame = targetFrame;
     const CGSize sizes[] = {{44.0, 32.0}, {36.0, 28.0}, {28.0, 24.0}};
+    // Keep the menu column even when date/topic/edit content fills the header.
+    // Only headers without a menu use the general free-space search.
+    BOOL belowMenu = hasMenu;
     for (NSUInteger sizeIndex = 0; sizeIndex < sizeof(sizes) / sizeof(sizes[0]); sizeIndex++) {
     size = sizes[sizeIndex];
     size.width = MIN(size.width, MAX(1.0, CGRectGetWidth(available)));
     size.height = MIN(size.height, MAX(1.0, CGRectGetHeight(available)));
     CGFloat preferredX = follow ? x + (44.0 - size.width) / 2.0 : trailing - size.width;
     CGFloat preferredY = follow ? y : round(CGRectGetMidY(anchorFrame) - size.height / 2.0);
+    if (belowMenu) {
+        preferredX = CGRectGetMidX(anchorFrame) - size.width / 2.0;
+        preferredY = CGRectGetMaxY(anchorFrame) + 4.0;
+        if (bestOverlap == CGFLOAT_MAX) {
+            fallbackFrame = CGRectMake(MAX(CGRectGetMinX(available), MIN(preferredX,
+                CGRectGetMaxX(available) - size.width)), preferredY, size.width, size.height);
+        }
+    }
     CGRect preferredFrame = CGRectMake(preferredX, preferredY, size.width, size.height);
     NSMutableArray<NSValue *> *candidates = [NSMutableArray arrayWithObject:[NSValue valueWithCGRect:preferredFrame]];
     // Prefer below the requested anchor, then other free gaps in this header.
@@ -540,6 +576,11 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     }
     [rows sortUsingSelector:@selector(compare:)];
     for (NSNumber *row in rows) {
+        if (belowMenu) {
+            [candidates addObject:[NSValue valueWithCGRect:CGRectMake(preferredX,
+                row.doubleValue, size.width, size.height)]];
+            continue;
+        }
         for (NSNumber *column in columns) {
             [candidates addObject:[NSValue valueWithCGRect:CGRectMake(column.doubleValue,
                 row.doubleValue, size.width, size.height)]];
@@ -548,7 +589,12 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
     for (NSValue *candidate in candidates) {
         CGRect frame = candidate.CGRectValue;
         frame.origin.x = MAX(CGRectGetMinX(available), MIN(frame.origin.x, CGRectGetMaxX(available) - size.width));
-        frame.origin.y = MAX(CGRectGetMinY(available), MIN(frame.origin.y, CGRectGetMaxY(available) - size.height));
+        // Do not clamp the below-menu candidate back onto the menu itself.
+        if (belowMenu) {
+            if (!CGRectContainsRect(available, frame)) continue;
+        } else {
+            frame.origin.y = MAX(CGRectGetMinY(available), MIN(frame.origin.y, CGRectGetMaxY(available) - size.height));
+        }
         CGFloat overlap = 0.0;
         for (NSValue *obstacle in obstacles) {
             CGRect intersection = CGRectIntersection(CGRectInset(frame, -2.0, -1.0), obstacle.CGRectValue);
@@ -579,12 +625,13 @@ static void TSBPlaceSpoilerBadge(UIView *spoilerView, UIView *timestamp) {
                                             weight:UIFontWeightSemibold];
     badge.titleLabel.adjustsFontSizeToFitWidth = YES;
     badge.titleLabel.minimumScaleFactor = 0.8;
-    if (!CGRectEqualToRect(badge.frame, targetFrame)) {
-        badge.frame = targetFrame;
+    CGRect hostFrame = [header convertRect:targetFrame toView:badgeHost];
+    if (!CGRectEqualToRect(badge.frame, hostFrame)) {
+        badge.frame = hostFrame;
     }
     objc_setAssociatedObject(spoilerView, &TSBBadgeAnchorKey, timestamp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     badge.hidden = NO;
-    [header bringSubviewToFront:badge];
+    [badgeHost bringSubviewToFront:badge];
 }
 
 static void TSBRegisterPendingSpoiler(UIView *spoilerView) {
