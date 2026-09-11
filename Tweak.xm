@@ -243,8 +243,9 @@ static void TSBHookedFooterPrepareForReuse(UICollectionViewCell *self, SEL cmd) 
 static void TSBHookedCollectionCellDidMoveToWindow(UICollectionViewCell *self, SEL cmd) {
     TSBOriginalCollectionCellDidMoveToWindow(self, cmd);
     if (!TSBIsFooterCell(self)) return;
-    if (!self.window) TSBClearFooterCell(self);
-    else TSBRefreshFooterCell(self);
+    // A footer can leave the window while the same post's media or text cell
+    // remains visible. prepareForReuse is the definitive reuse signal.
+    if (self.window) TSBRefreshFooterCell(self);
 }
 
 static void TSBHookedCollectionCellPrepareForReuse(UICollectionViewCell *self, SEL cmd) {
