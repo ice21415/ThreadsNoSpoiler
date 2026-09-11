@@ -12,9 +12,22 @@
 @end
 static char TSBFooterShareStateKey;
 
+static UIView *TSBFindUFIView(UIView *root) {
+    if (!root) return nil;
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:root];
+    while (pending.count) {
+        UIView *view = pending.lastObject;
+        [pending removeLastObject];
+        if ([NSStringFromClass(view.class) containsString:@"BCNUFIView"]) return view;
+        [pending addObjectsFromArray:view.subviews];
+    }
+    return nil;
+}
+
 BOOL TSBIsFooterCell(UIView *view) {
-    return [view isKindOfClass:UICollectionViewCell.class] &&
-        [NSStringFromClass(view.class) containsString:@"BCNFeedItemUFICell"];
+    if (![view isKindOfClass:UICollectionViewCell.class]) return NO;
+    return [NSStringFromClass(view.class) containsString:@"BCNFeedItemUFICell"] ||
+        TSBFindUFIView(view) != nil;
 }
 
 void TSBRestoreFooterShare(UICollectionViewCell *footer) {
@@ -29,6 +42,8 @@ UICollectionViewCell *TSBFooterForFeedCell(UICollectionViewCell *source) {
     UICollectionView *collection = [source.superview isKindOfClass:UICollectionView.class] ?
         (UICollectionView *)source.superview : nil;
     if (!collection || ![collection indexPathForCell:source]) return nil;
+    // Some feed layouts embed BCNUFIView in the same cell as the post body.
+    if (TSBFindUFIView(source)) return source;
     CGRect sourceFrame = [source convertRect:source.bounds toView:collection];
     NSMutableArray<UICollectionViewCell *> *cells = [NSMutableArray array];
     std::vector<TSBVisualRow> rows;
@@ -55,7 +70,8 @@ static BOOL TSBVisibleInFooter(UIView *view, UIView *footer) {
 
 UIView *TSBFooterShareButton(UICollectionViewCell *footer) {
     if (!TSBIsFooterCell(footer)) return nil;
-    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:footer];
+    UIView *ufi = TSBFindUFIView(footer);
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:ufi ?: footer];
     UIView *named = nil;
     UIView *rightmostUFI = nil;
     UIView *rightmostControl = nil;
@@ -70,7 +86,9 @@ UIView *TSBFooterShareButton(UICollectionViewCell *footer) {
         // Use observed selector names only on the UFI container, never KVC on
         // arbitrary views. The return type must be an Objective-C object.
         if ([className containsString:@"BCNUFIView"] || view == footer) {
-            for (NSString *getter in @[@"shareButton", @"sendButton"]) {
+            // Current Threads bundle exposes the paper plane as sendButton
+            // (IGUFIButton) and stores it in _sendButtonContainer.
+            for (NSString *getter in @[@"sendButton", @"shareButton"]) {
                 SEL selector = NSSelectorFromString(getter);
                 if (![view respondsToSelector:selector]) continue;
                 NSMethodSignature *signature = [view methodSignatureForSelector:selector];
