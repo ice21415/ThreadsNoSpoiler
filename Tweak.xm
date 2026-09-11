@@ -370,6 +370,13 @@ static BOOL TSBProcessSpoilerOwner(UIView *spoilerView) {
     objc_setAssociatedObject(spoilerView, &TSBNativeMaskSeenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(spoilerView, &TSBActiveSpoilerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     TSBApplySpoilerPresentation(spoilerView);
+    // BCNSpoilerView is Threads' masking container. Its effect and overlay
+    // children can remain visible after their alpha changes, so remove only
+    // this confirmed native spoiler owner in normal bypass mode.
+    if (TSBEnabled() && ![NSUserDefaults.standardUserDefaults boolForKey:TSBForceHideContainerKey] &&
+        ![objc_getAssociatedObject(spoilerView, &TSBPreviewingOriginalKey) boolValue]) {
+        TSBOriginalSetHidden(spoilerView, @selector(setHidden:), YES);
+    }
     TSBUpdateSpoilerBadge(spoilerView);
     return YES;
 }
